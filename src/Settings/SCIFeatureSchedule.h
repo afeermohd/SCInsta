@@ -3,6 +3,8 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+FOUNDATION_EXPORT NSNotificationName const SCIFeatureScheduleAvailabilityChangedNotification;
+
 /// Daily time windows and per-window usage limits for Instagram surfaces.
 @interface SCIFeatureSchedule : NSObject
 
@@ -11,11 +13,12 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSTimeInterval)remainingSecondsForKey:(NSString *)featureKey;
 + (NSString *)unavailableReasonForKey:(NSString *)featureKey;
 
+/// Bottom-nav surface intents (FEED, CLIPS, SEARCH) hidden when schedule blocks the feature.
++ (BOOL)isMainAppSurfaceAllowed:(NSString *)tabStringFromSurfaceIntent;
+
 + (void)beginUseForKey:(NSString *)featureKey onBlocked:(nullable void (^)(void))onBlocked;
 + (void)endUseForKey:(NSString *)featureKey;
-
-+ (void)showBlockOverlayOnViewController:(UIViewController *)viewController featureKey:(NSString *)featureKey;
-+ (void)hideBlockOverlayOnViewController:(UIViewController *)viewController;
++ (void)notifyAvailabilityChanged;
 
 + (NSString *)formattedTimeFromMinutes:(NSInteger)minutes;
 

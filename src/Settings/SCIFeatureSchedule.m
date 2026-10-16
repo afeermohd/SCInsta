@@ -1,7 +1,7 @@
 #import "SCIFeatureSchedule.h"
 #import "../Utils.h"
 
-static const NSInteger kSCIBlockOverlayTag = 0x5C15001;
+NSNotificationName const SCIFeatureScheduleAvailabilityChangedNotification = @"SCIFeatureScheduleAvailabilityChangedNotification";
 
 static NSMutableDictionary<NSString *, NSDate *> *SCIActiveSessionStarts;
 static NSMutableDictionary<NSString *, NSTimer *> *SCIActiveSessionTimers;
@@ -16,6 +16,27 @@ static NSMutableDictionary<NSString *, NSTimer *> *SCIActiveSessionTimers;
 
     NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
     [nc addObserver:self selector:@selector(_applicationDidEnterBackground:) name:UIApplicationDidEnterBackgroundNotification object:nil];
+    [nc addObserver:self selector:@selector(_applicationWillEnterForeground:) name:UIApplicationWillEnterForegroundNotification object:nil];
+}
+
++ (NSString *)_featureKeyForSurfaceTabString:(NSString *)tabString {
+    if ([tabString isEqualToString:@"FEED"]) return @"feed";
+    if ([tabString isEqualToString:@"CLIPS"]) return @"reels";
+    if ([tabString isEqualToString:@"SEARCH"]) return @"explore";
+    return nil;
+}
+
++ (BOOL)isMainAppSurfaceAllowed:(NSString *)tabStringFromSurfaceIntent {
+    NSString *featureKey = [self _featureKeyForSurfaceTabString:tabStringFromSurfaceIntent];
+    if (!featureKey) return YES;
+    if (![self isScheduleEnabledForKey:featureKey]) return YES;
+    return [self isAvailableForKey:featureKey];
+}
+
++ (void)notifyAvailabilityChanged {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter] postNotificationName:SCIFeatureScheduleAvailabilityChangedNotification object:nil];
+    });
 }
 
 + (NSString *)_prefKey:(NSString *)feature suffix:(NSString *)suffix {
@@ -226,57 +247,8 @@ static NSMutableDictionary<NSString *, NSTimer *> *SCIActiveSessionTimers;
     }
 }
 
-+ (void)showBlockOverlayOnViewController:(UIViewController *)viewController featureKey:(NSString *)featureKey {
-    if (!viewController.view) return;
-
-    UIView *existing = [viewController.view viewWithTag:kSCIBlockOverlayTag];
-    if (existing) {
-        UILabel *detail = [existing viewWithTag:kSCIBlockOverlayTag + 1];
-        if ([detail isKindOfClass:[UILabel class]]) {
-            detail.text = [self unavailableReasonForKey:featureKey];
-        }
-        return;
-    }
-
-    UIView *overlay = [[UIView alloc] initWithFrame:viewController.view.bounds];
-    overlay.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    overlay.tag = kSCIBlockOverlayTag;
-    overlay.backgroundColor = [[UIColor systemBackgroundColor] colorWithAlphaComponent:0.92];
-
-    UIStackView *stack = [[UIStackView alloc] init];
-    stack.axis = UILayoutConstraintAxisVertical;
-    stack.spacing = 12;
-    stack.alignment = UIStackViewAlignmentCenter;
-    stack.translatesAutoresizingMaskIntoConstraints = NO;
-
-    UILabel *title = [[UILabel alloc] init];
-    title.text = [featureKey capitalizedString];
-    title.font = [UIFont boldSystemFontOfSize:22];
-
-    UILabel *detail = [[UILabel alloc] init];
-    detail.tag = kSCIBlockOverlayTag + 1;
-    detail.text = [self unavailableReasonForKey:featureKey];
-    detail.numberOfLines = 0;
-    detail.textAlignment = NSTextAlignmentCenter;
-    detail.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
-    detail.textColor = [UIColor secondaryLabelColor];
-
-    [stack addArrangedSubview:title];
-    [stack addArrangedSubview:detail];
-
-    [overlay addSubview:stack];
-    [viewController.view addSubview:overlay];
-
-    [NSLayoutConstraint activateConstraints:@[
-        [stack.centerXAnchor constraintEqualToAnchor:overlay.centerXAnchor],
-        [stack.centerYAnchor constraintEqualToAnchor:overlay.centerYAnchor],
-        [stack.leadingAnchor constraintGreaterThanOrEqualToAnchor:overlay.leadingAnchor constant:24],
-        [stack.trailingAnchor constraintLessThanOrEqualToAnchor:overlay.trailingAnchor constant:-24],
-    ]];
-}
-
-+ (void)hideBlockOverlayOnViewController:(UIViewController *)viewController {
-    [[viewController.view viewWithTag:kSCIBlockOverlayTag] removeFromSuperview];
++ (void)_applicationWillEnterForeground:(NSNotification *)note {
+    [self notifyAvailabilityChanged];
 }
 
 @end

@@ -1,20 +1,27 @@
 #import "../../Utils.h"
+#import "../../Settings/SCIFeatureSchedule.h"
 
 BOOL isSurfaceShown(IGMainAppSurfaceIntent *surface) {
     BOOL isShown = YES;
+    NSString *tabString = [surface tabStringFromSurfaceIntent];
 
     // Feed
-    if ([[surface tabStringFromSurfaceIntent] isEqualToString:@"FEED"] && [SCIUtils getBoolPref:@"hide_feed_tab"]) {
+    if ([tabString isEqualToString:@"FEED"] && [SCIUtils getBoolPref:@"hide_feed_tab"]) {
         isShown = NO;
     }
     
     // Reels
-    else if ([[surface tabStringFromSurfaceIntent] isEqualToString:@"CLIPS"] && [SCIUtils getBoolPref:@"hide_reels_tab"]) {
+    else if ([tabString isEqualToString:@"CLIPS"] && [SCIUtils getBoolPref:@"hide_reels_tab"]) {
         isShown = NO;
     }
 
     // Explore
-    else if ([[surface tabStringFromSurfaceIntent] isEqualToString:@"SEARCH"] && [SCIUtils getBoolPref:@"hide_explore_tab"]) {
+    else if ([tabString isEqualToString:@"SEARCH"] && [SCIUtils getBoolPref:@"hide_explore_tab"]) {
+        isShown = NO;
+    }
+
+    // Feature schedule limits (same mechanism as hide_* tabs)
+    else if (![SCIFeatureSchedule isMainAppSurfaceAllowed:tabString]) {
         isShown = NO;
     }
 
@@ -50,6 +57,19 @@ NSArray *filterSurfacesArray(NSArray *surfaces) {
 %end
 
 %hook IGTabBarController
+- (void)viewDidLoad {
+    %orig;
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(sci_featureScheduleAvailabilityChanged:)
+                                                 name:SCIFeatureScheduleAvailabilityChangedNotification
+                                               object:nil];
+}
+
+%new
+- (void)sci_featureScheduleAvailabilityChanged:(NSNotification *)notification {
+    [self _layoutTabBar];
+}
+
 - (void)_layoutTabBar {
     // Prevents the wrong icon from being shown as selected because of mismatched surface array indexes
     NSArray *_tabBarSurfaces = [SCIUtils getIvarForObj:self name:"_tabBarSurfaces"];

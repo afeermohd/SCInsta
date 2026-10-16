@@ -334,7 +334,7 @@
                                                icon:[SCISymbol symbolWithName:@"paperplane"]
                                         navSections:@[@{ @"header": @"", @"rows": [self _scheduleRowsForFeature:@"messages" title:@"messages"] }]]
             ],
-            @"footer": @"Limits apply while the matching screen is open. Usage pauses in the background. The minute counter resets when each window opens."
+            @"footer": @"When a limit applies, the matching tab is removed from the bottom navigation (like Hide reels tab). Usage is tracked only while that screen is open, pauses in the background, and resets when each window opens."
         }
     ];
 }
