@@ -65,11 +65,15 @@ static NSTimer *SCISchedulePollTimer;
     }
 }
 
++ (BOOL)isFeatureNavigationAllowed:(NSString *)featureKey {
+    if (![self isScheduleEnabledForKey:featureKey]) return YES;
+    return [self isAvailableForKey:featureKey];
+}
+
 + (BOOL)isMainAppSurfaceAllowed:(NSString *)tabStringFromSurfaceIntent {
     NSString *featureKey = [self _featureKeyForSurfaceTabString:tabStringFromSurfaceIntent];
     if (!featureKey) return YES;
-    if (![self isScheduleEnabledForKey:featureKey]) return YES;
-    return [self isAvailableForKey:featureKey];
+    return [self isFeatureNavigationAllowed:featureKey];
 }
 
 + (void)notifyAvailabilityChanged {

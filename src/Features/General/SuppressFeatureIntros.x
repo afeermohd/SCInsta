@@ -52,48 +52,31 @@ static BOOL SCIViewControllerLooksLikeFeatureIntro(UIViewController *viewControl
         return YES;
     }
 
-    NSString *viewText = SCICollectVisibleTextInView(viewController.view, 0);
-    if (SCITextLooksLikeFeatureIntro(viewText)) return YES;
-
-    return NO;
-}
-
-static BOOL SCIIsLikelyIntroPresentationClass(UIViewController *viewController) {
-    NSString *name = NSStringFromClass([viewController class]).lowercaseString;
-    if ([name containsString:@"bloks"] || [name containsString:@"bottomsheet"] || [name containsString:@"nux"] ||
-        [name containsString:@"promo"] || [name containsString:@"dialog"] || [name containsString:@"modal"]) {
+    if (SCITextLooksLikeFeatureIntro(SCICollectVisibleTextInView(viewController.view, 0))) {
         return YES;
     }
+
     return NO;
 }
 
-static void SCISuppressPresentedViewControllerIfIntro(UIViewController *viewController) {
-    if (!SCIShouldSuppressFeatureIntros() || !viewController) return;
+static BOOL SCIIsBlockedIntroPresentationClass(UIViewController *viewController) {
+    NSString *name = NSStringFromClass([viewController class]);
 
-    if (!SCIViewControllerLooksLikeFeatureIntro(viewController) && !SCIIsLikelyIntroPresentationClass(viewController)) {
-        return;
-    }
+    if ([name containsString:@"IGPartialModalSheetViewController"]) return YES;
+    if ([name containsString:@"Bloks"] && ([name containsString:@"Modal"] || [name containsString:@"Sheet"])) return YES;
 
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (SCIViewControllerLooksLikeFeatureIntro(viewController)) {
-            NSLog(@"[SCInsta] Dismissing feature intro: %@", NSStringFromClass([viewController class]));
-            [viewController dismissViewControllerAnimated:YES completion:nil];
-        }
-    });
+    return NO;
 }
 
 static BOOL SCIShouldBlockPresentationOfViewController(UIViewController *viewController) {
     if (!SCIShouldSuppressFeatureIntros() || !viewController) return NO;
+    return SCIViewControllerLooksLikeFeatureIntro(viewController);
+}
 
-    if (SCIViewControllerLooksLikeFeatureIntro(viewController)) return YES;
-
-    if (SCIIsLikelyIntroPresentationClass(viewController)) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            SCISuppressPresentedViewControllerIfIntro(viewController);
-        });
-    }
-
-    return NO;
+static BOOL SCIInboxShouldBlockPresentation(UIViewController *viewControllerToPresent) {
+    if (!SCIShouldSuppressFeatureIntros()) return NO;
+    if (SCIShouldBlockPresentationOfViewController(viewControllerToPresent)) return YES;
+    return SCIIsBlockedIntroPresentationClass(viewControllerToPresent);
 }
 
 %hook IGDirectNUXManager
@@ -169,19 +152,35 @@ static BOOL SCIShouldBlockPresentationOfViewController(UIViewController *viewCon
 
 - (void)_superPresentViewController:(UIViewController *)viewControllerToPresent animated:(BOOL)flag completion:(id)completion {
     if (SCIShouldBlockPresentationOfViewController(viewControllerToPresent)) {
-        NSLog(@"[SCInsta] Suppressed feature intro (_superPresent): %@", NSStringFromClass([viewControllerToPresent class]));
+        NSLog(@"[SCInsta] Blocked feature intro (_superPresent): %@", NSStringFromClass([viewControllerToPresent class]));
         if (completion) ((void (^)(void))completion)();
         return;
     }
     %orig;
 }
 
-- (void)viewDidAppear:(BOOL)animated {
-    %orig;
-    if (SCIShouldSuppressFeatureIntros() && SCIViewControllerLooksLikeFeatureIntro(self)) {
-        NSLog(@"[SCInsta] Dismissing feature intro (viewDidAppear): %@", NSStringFromClass([self class]));
-        [self dismissViewControllerAnimated:YES completion:nil];
+%end
+
+%hook IGDirectInboxViewController
+
+- (void)presentViewController:(UIViewController *)viewControllerToPresent
+                     animated:(BOOL)flag
+                   completion:(void (^)(void))completion {
+    if (SCIInboxShouldBlockPresentation(viewControllerToPresent)) {
+        NSLog(@"[SCInsta] Blocked inbox intro (present): %@", NSStringFromClass([viewControllerToPresent class]));
+        if (completion) completion();
+        return;
     }
+    %orig;
+}
+
+- (void)_superPresentViewController:(UIViewController *)viewControllerToPresent animated:(BOOL)flag completion:(id)completion {
+    if (SCIInboxShouldBlockPresentation(viewControllerToPresent)) {
+        NSLog(@"[SCInsta] Blocked inbox intro (_superPresent): %@", NSStringFromClass([viewControllerToPresent class]));
+        if (completion) ((void (^)(void))completion)();
+        return;
+    }
+    %orig;
 }
 
 %end
@@ -192,11 +191,36 @@ static BOOL SCIShouldBlockPresentationOfViewController(UIViewController *viewCon
                      animated:(BOOL)flag
                    completion:(void (^)(void))completion {
     if (SCIShouldBlockPresentationOfViewController(viewControllerToPresent)) {
-        NSLog(@"[SCInsta] Suppressed feature intro (present): %@", NSStringFromClass([viewControllerToPresent class]));
+        NSLog(@"[SCInsta] Blocked feature intro (present): %@", NSStringFromClass([viewControllerToPresent class]));
         if (completion) completion();
         return;
     }
     %orig;
 }
 
+%end
+
+%hook IGDirectNotesTrayRowCell
+- (id)listAdapterObjects {
+    NSArray *originalObjs = %orig();
+    if (!SCIShouldSuppressFeatureIntros()) return originalObjs;
+
+    NSMutableArray *filteredObjs = [NSMutableArray arrayWithCapacity:[originalObjs count]];
+
+    for (id obj in originalObjs) {
+        BOOL shouldHide = NO;
+
+        if ([obj isKindOfClass:%c(IGDirectNotesTrayUserViewModel)]) {
+            if ([[obj valueForKey:@"notePk"] isEqualToString:@"friends_map"]) {
+                shouldHide = YES;
+            }
+        }
+
+        if (!shouldHide) {
+            [filteredObjs addObject:obj];
+        }
+    }
+
+    return [filteredObjs copy];
+}
 %end

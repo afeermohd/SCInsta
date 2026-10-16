@@ -29,8 +29,7 @@ static void SCIDismissViewControllerIfBlocked(id viewController, NSString *featu
 }
 
 static void SCIBeginScheduleTracking(NSString *featureKey) {
-    if (![SCIFeatureSchedule isScheduleEnabledForKey:featureKey]) return;
-    if (![SCIFeatureSchedule isAvailableForKey:featureKey]) return;
+    if (![SCIFeatureSchedule isFeatureNavigationAllowed:featureKey]) return;
 
     [SCIFeatureSchedule beginUseForKey:featureKey onBlocked:^{
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -40,7 +39,7 @@ static void SCIBeginScheduleTracking(NSString *featureKey) {
 }
 
 static BOOL SCIViewWillAppearBlocked(id self, NSString *featureKey) {
-    if ([SCIFeatureSchedule isScheduleEnabledForKey:featureKey] && ![SCIFeatureSchedule isAvailableForKey:featureKey]) {
+    if (![SCIFeatureSchedule isFeatureNavigationAllowed:featureKey]) {
         SCIDismissViewControllerIfBlocked(self, featureKey);
         return YES;
     }
@@ -136,7 +135,7 @@ static BOOL SCIViewWillAppearBlocked(id self, NSString *featureKey) {
     %orig;
 }
 - (void)presentViewController:(UIViewController *)viewControllerToPresent animated:(BOOL)flag completion:(void (^)(void))completion {
-    if ([SCIFeatureSchedule isScheduleEnabledForKey:@"messages"] && ![SCIFeatureSchedule isAvailableForKey:@"messages"]) {
+    if (![SCIFeatureSchedule isFeatureNavigationAllowed:@"messages"]) {
         if (completion) completion();
         return;
     }

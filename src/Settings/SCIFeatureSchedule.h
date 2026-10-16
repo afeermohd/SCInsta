@@ -13,8 +13,11 @@ FOUNDATION_EXPORT NSNotificationName const SCIFeatureScheduleAvailabilityChanged
 + (NSTimeInterval)remainingSecondsForKey:(NSString *)featureKey;
 + (NSString *)unavailableReasonForKey:(NSString *)featureKey;
 
-/// Bottom-nav surface intents (FEED, CLIPS, SEARCH) hidden when schedule blocks the feature.
+/// Bottom-nav surface intents (FEED, CLIPS, SEARCH, DIRECT) hidden when schedule blocks the feature.
 + (BOOL)isMainAppSurfaceAllowed:(NSString *)tabStringFromSurfaceIntent;
+
+/// Whether the user may open this feature via tab bar / navigation (feed, reels, explore, messages).
++ (BOOL)isFeatureNavigationAllowed:(NSString *)featureKey;
 
 + (void)beginUseForKey:(NSString *)featureKey onBlocked:(nullable void (^)(void))onBlocked;
 + (void)endUseForKey:(NSString *)featureKey;

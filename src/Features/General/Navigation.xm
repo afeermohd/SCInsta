@@ -38,11 +38,45 @@ NSArray *filterSurfacesArray(NSArray *surfaces) {
     return filteredSurfaces;
 }
 
+static void SCISetTabBarButtonHidden(id tabBarController, NSString *key, BOOL hidden) {
+    @try {
+        UIView *button = [tabBarController valueForKey:key];
+        if (![button isKindOfClass:[UIView class]]) return;
+
+        button.hidden = hidden;
+        button.userInteractionEnabled = !hidden;
+        button.alpha = hidden ? 0.0 : 1.0;
+    } @catch (__unused NSException *exception) {
+    }
+}
+
+static void SCIApplyScheduleToTabBarButtons(id tabBarController) {
+    SCISetTabBarButtonHidden(tabBarController, @"_homeButton",
+                             ![SCIFeatureSchedule isFeatureNavigationAllowed:@"feed"]);
+    SCISetTabBarButtonHidden(tabBarController, @"_exploreButton",
+                             ![SCIFeatureSchedule isFeatureNavigationAllowed:@"explore"]);
+    SCISetTabBarButtonHidden(tabBarController, @"_discoverVideoButton",
+                             ![SCIFeatureSchedule isFeatureNavigationAllowed:@"reels"]);
+    SCISetTabBarButtonHidden(tabBarController, @"_directInboxButton",
+                             ![SCIFeatureSchedule isFeatureNavigationAllowed:@"messages"]);
+}
+
+static void SCIShowFeatureBlockedToast(NSString *featureKey) {
+    [SCIUtils showToastForDuration:3.0
+                             title:[NSString stringWithFormat:@"%@ unavailable", [featureKey capitalizedString]]
+                          subtitle:[SCIFeatureSchedule unavailableReasonForKey:featureKey]];
+}
+
+static BOOL SCIBlockTabBarAction(NSString *featureKey) {
+    if ([SCIFeatureSchedule isFeatureNavigationAllowed:featureKey]) return NO;
+    SCIShowFeatureBlockedToast(featureKey);
+    return YES;
+}
+
 ///////////////////////////////////////////////
 
 %hook IGTabBarControllerSwipeCoordinator
 - (id)initWithSurfaces:(id)surfaces parentViewController:(id)controller enableHaptics:(_Bool)haptics launcherSet:(id)set {
-    // Removes the surface from the main swipeable app collection view
     return %orig(filterSurfacesArray(surfaces), controller, haptics, set);
 }
 %end
@@ -62,16 +96,16 @@ NSArray *filterSurfacesArray(NSArray *surfaces) {
 }
 
 - (void)_layoutTabBar {
-    // Prevents the wrong icon from being shown as selected because of mismatched surface array indexes
     NSArray *_tabBarSurfaces = [SCIUtils getIvarForObj:self name:"_tabBarSurfaces"];
 
     [SCIUtils setIvarForObj:self name:"_tabBarSurfaces" value:filterSurfacesArray(_tabBarSurfaces)];
-    
+
     %orig;
+
+    SCIApplyScheduleToTabBarButtons(self);
 }
 
 - (id)_buttonForTabBarSurface:(id)surface {
-    // Prevents the button from being added to the tab bar 
     id button = %orig(surface);
 
     if (!isSurfaceShown(surface)) {
@@ -80,6 +114,27 @@ NSArray *filterSurfacesArray(NSArray *surfaces) {
 
     return button;
 }
+
+- (void)_homeButtonPressed {
+    if (SCIBlockTabBarAction(@"feed")) return;
+    %orig;
+}
+
+- (void)_exploreButtonPressed {
+    if (SCIBlockTabBarAction(@"explore")) return;
+    %orig;
+}
+
+- (void)_discoverVideoButtonPressed {
+    if (SCIBlockTabBarAction(@"reels")) return;
+    %orig;
+}
+
+- (void)_directInboxButtonPressed {
+    if (SCIBlockTabBarAction(@"messages")) return;
+    %orig;
+}
+
 %end
 
 // Demangled name: IGNavConfiguration.IGNavConfiguration
