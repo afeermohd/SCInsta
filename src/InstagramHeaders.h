@@ -54,6 +54,7 @@
 @end
 
 @interface IGTabBarController : UIViewController
+- (void)_layoutTabBar;
 @end
 
 @interface IGTableViewCell: UITableViewCell
