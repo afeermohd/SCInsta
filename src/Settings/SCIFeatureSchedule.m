@@ -5,6 +5,8 @@ NSNotificationName const SCIFeatureScheduleAvailabilityChangedNotification = @"S
 
 static NSMutableDictionary<NSString *, NSDate *> *SCIActiveSessionStarts;
 static NSMutableDictionary<NSString *, NSTimer *> *SCIActiveSessionTimers;
+static NSMutableDictionary<NSString *, NSNumber *> *SCILastSurfaceAllowedByFeature;
+static NSTimer *SCISchedulePollTimer;
 
 @implementation SCIFeatureSchedule
 
@@ -13,17 +15,54 @@ static NSMutableDictionary<NSString *, NSTimer *> *SCIActiveSessionTimers;
 
     SCIActiveSessionStarts = [NSMutableDictionary dictionary];
     SCIActiveSessionTimers = [NSMutableDictionary dictionary];
+    SCILastSurfaceAllowedByFeature = [NSMutableDictionary dictionary];
 
     NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
     [nc addObserver:self selector:@selector(_applicationDidEnterBackground:) name:UIApplicationDidEnterBackgroundNotification object:nil];
     [nc addObserver:self selector:@selector(_applicationWillEnterForeground:) name:UIApplicationWillEnterForegroundNotification object:nil];
+
+    SCISchedulePollTimer = [NSTimer scheduledTimerWithTimeInterval:30.0 repeats:YES block:^(NSTimer * _Nonnull timer) {
+        [SCIFeatureSchedule _pollScheduleAvailability];
+    }];
 }
 
 + (NSString *)_featureKeyForSurfaceTabString:(NSString *)tabString {
-    if ([tabString isEqualToString:@"FEED"]) return @"feed";
-    if ([tabString isEqualToString:@"CLIPS"]) return @"reels";
-    if ([tabString isEqualToString:@"SEARCH"]) return @"explore";
+    if (!tabString.length) return nil;
+
+    if ([tabString isEqualToString:@"FEED"] || [tabString isEqualToString:@"HOME"] || [tabString isEqualToString:@"TIMELINE"]) {
+        return @"feed";
+    }
+    if ([tabString isEqualToString:@"CLIPS"] || [tabString isEqualToString:@"REELS"]) {
+        return @"reels";
+    }
+    if ([tabString isEqualToString:@"SEARCH"] || [tabString isEqualToString:@"EXPLORE"] || [tabString isEqualToString:@"DISCOVER"]) {
+        return @"explore";
+    }
+    if ([tabString isEqualToString:@"DIRECT"] || [tabString isEqualToString:@"DM"] || [tabString isEqualToString:@"INBOX"]) {
+        return @"messages";
+    }
     return nil;
+}
+
++ (void)_pollScheduleAvailability {
+    BOOL anyEnabled = NO;
+    BOOL changed = NO;
+
+    for (NSString *featureKey in @[ @"feed", @"reels", @"explore", @"messages" ]) {
+        if (![self isScheduleEnabledForKey:featureKey]) continue;
+        anyEnabled = YES;
+
+        BOOL allowed = [self isAvailableForKey:featureKey];
+        NSNumber *previous = SCILastSurfaceAllowedByFeature[featureKey];
+        if (previous && previous.boolValue != allowed) {
+            changed = YES;
+        }
+        SCILastSurfaceAllowedByFeature[featureKey] = @(allowed);
+    }
+
+    if (anyEnabled && changed) {
+        [self notifyAvailabilityChanged];
+    }
 }
 
 + (BOOL)isMainAppSurfaceAllowed:(NSString *)tabStringFromSurfaceIntent {

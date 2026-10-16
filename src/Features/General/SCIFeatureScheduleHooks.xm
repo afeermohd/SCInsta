@@ -39,12 +39,17 @@ static void SCIBeginScheduleTracking(NSString *featureKey) {
     }];
 }
 
+static BOOL SCIViewWillAppearBlocked(id self, NSString *featureKey) {
+    if ([SCIFeatureSchedule isScheduleEnabledForKey:featureKey] && ![SCIFeatureSchedule isAvailableForKey:featureKey]) {
+        SCIDismissViewControllerIfBlocked(self, featureKey);
+        return YES;
+    }
+    return NO;
+}
+
 %hook IGSundialFeedViewController
 - (void)viewWillAppear:(BOOL)animated {
-    if ([SCIFeatureSchedule isScheduleEnabledForKey:@"reels"] && ![SCIFeatureSchedule isAvailableForKey:@"reels"]) {
-        SCIDismissViewControllerIfBlocked(self, @"reels");
-        return;
-    }
+    if (SCIViewWillAppearBlocked(self, @"reels")) return;
     %orig;
 }
 - (void)viewDidAppear:(BOOL)animated {
@@ -59,10 +64,22 @@ static void SCIBeginScheduleTracking(NSString *featureKey) {
 
 %hook IGMainFeedViewController
 - (void)viewWillAppear:(BOOL)animated {
-    if ([SCIFeatureSchedule isScheduleEnabledForKey:@"feed"] && ![SCIFeatureSchedule isAvailableForKey:@"feed"]) {
-        SCIDismissViewControllerIfBlocked(self, @"feed");
-        return;
-    }
+    if (SCIViewWillAppearBlocked(self, @"feed")) return;
+    %orig;
+}
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    SCIBeginScheduleTracking(@"feed");
+}
+- (void)viewDidDisappear:(BOOL)animated {
+    [SCIFeatureSchedule endUseForKey:@"feed"];
+    %orig;
+}
+%end
+
+%hook IGMainFeedViewController_objc
+- (void)viewWillAppear:(BOOL)animated {
+    if (SCIViewWillAppearBlocked(self, @"feed")) return;
     %orig;
 }
 - (void)viewDidAppear:(BOOL)animated {
@@ -77,10 +94,22 @@ static void SCIBeginScheduleTracking(NSString *featureKey) {
 
 %hook IGExploreGridViewController
 - (void)viewWillAppear:(BOOL)animated {
-    if ([SCIFeatureSchedule isScheduleEnabledForKey:@"explore"] && ![SCIFeatureSchedule isAvailableForKey:@"explore"]) {
-        SCIDismissViewControllerIfBlocked(self, @"explore");
-        return;
-    }
+    if (SCIViewWillAppearBlocked(self, @"explore")) return;
+    %orig;
+}
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    SCIBeginScheduleTracking(@"explore");
+}
+- (void)viewDidDisappear:(BOOL)animated {
+    [SCIFeatureSchedule endUseForKey:@"explore"];
+    %orig;
+}
+%end
+
+%hook IGExploreViewController
+- (void)viewWillAppear:(BOOL)animated {
+    if (SCIViewWillAppearBlocked(self, @"explore")) return;
     %orig;
 }
 - (void)viewDidAppear:(BOOL)animated {
@@ -95,10 +124,7 @@ static void SCIBeginScheduleTracking(NSString *featureKey) {
 
 %hook IGDirectInboxViewController
 - (void)viewWillAppear:(BOOL)animated {
-    if ([SCIFeatureSchedule isScheduleEnabledForKey:@"messages"] && ![SCIFeatureSchedule isAvailableForKey:@"messages"]) {
-        SCIDismissViewControllerIfBlocked(self, @"messages");
-        return;
-    }
+    if (SCIViewWillAppearBlocked(self, @"messages")) return;
     %orig;
 }
 - (void)viewDidAppear:(BOOL)animated {
@@ -107,6 +133,13 @@ static void SCIBeginScheduleTracking(NSString *featureKey) {
 }
 - (void)viewDidDisappear:(BOOL)animated {
     [SCIFeatureSchedule endUseForKey:@"messages"];
+    %orig;
+}
+- (void)presentViewController:(UIViewController *)viewControllerToPresent animated:(BOOL)flag completion:(void (^)(void))completion {
+    if ([SCIFeatureSchedule isScheduleEnabledForKey:@"messages"] && ![SCIFeatureSchedule isAvailableForKey:@"messages"]) {
+        if (completion) completion();
+        return;
+    }
     %orig;
 }
 %end

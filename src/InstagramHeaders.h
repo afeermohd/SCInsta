@@ -346,6 +346,12 @@
 
 @interface IGDirectNUXManager : NSObject
 - (void)markTooltipOfTypeAsCompleted:(unsigned long long)type;
+- (void)markNuxAsCompletedWithKey:(id)key;
+- (_Bool)nuxWithKeyIsCompleted:(id)key;
+- (_Bool)canShowNUXBasedOnLastTimestampForKey:(id)key;
+@end
+
+@interface IGExploreViewController : IGViewController
 @end
 
 @interface IGDirectMediaPickerConfig : NSObject

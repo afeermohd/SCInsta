@@ -1,4 +1,5 @@
 #import "../../Utils.h"
+#import "../../InstagramHeaders.h"
 
 static BOOL SCIShouldSuppressFeatureIntros(void) {
     return [SCIUtils getBoolPref:@"suppress_feature_intros"];
@@ -29,28 +30,68 @@ static NSString *SCICollectVisibleTextInView(UIView *view, NSUInteger depth) {
     return [parts componentsJoinedByString:@" "];
 }
 
+static BOOL SCITextLooksLikeFeatureIntro(NSString *text) {
+    if (!text.length) return NO;
+    NSString *lower = text.lowercaseString;
+    if ([lower containsString:@"introducing instagram map"]) return YES;
+    if ([lower containsString:@"introducing"] && [lower containsString:@"map"]) return YES;
+    if ([lower hasPrefix:@"introducing"]) return YES;
+    return NO;
+}
+
 static BOOL SCIViewControllerLooksLikeFeatureIntro(UIViewController *viewController) {
     if (!viewController) return NO;
 
     if ([viewController isKindOfClass:[UIAlertController class]]) {
         UIAlertController *alert = (UIAlertController *)viewController;
         NSString *blob = [NSString stringWithFormat:@"%@ %@", alert.title ?: @"", alert.message ?: @""];
-        NSString *lower = blob.lowercaseString;
-        if ([lower containsString:@"introducing"] || [lower containsString:@"instagram map"]) {
-            return YES;
-        }
+        if (SCITextLooksLikeFeatureIntro(blob)) return YES;
     }
 
-    if (viewController.title.length) {
-        NSString *lower = viewController.title.lowercaseString;
-        if ([lower containsString:@"introducing"] || [lower containsString:@"instagram map"]) {
-            return YES;
-        }
+    if (viewController.title.length && SCITextLooksLikeFeatureIntro(viewController.title)) {
+        return YES;
     }
 
-    NSString *viewText = SCICollectVisibleTextInView(viewController.view, 0).lowercaseString;
-    if ([viewText containsString:@"introducing instagram map"]) return YES;
-    if ([viewText containsString:@"introducing"] && [viewText containsString:@"map"]) return YES;
+    NSString *viewText = SCICollectVisibleTextInView(viewController.view, 0);
+    if (SCITextLooksLikeFeatureIntro(viewText)) return YES;
+
+    return NO;
+}
+
+static BOOL SCIIsLikelyIntroPresentationClass(UIViewController *viewController) {
+    NSString *name = NSStringFromClass([viewController class]).lowercaseString;
+    if ([name containsString:@"bloks"] || [name containsString:@"bottomsheet"] || [name containsString:@"nux"] ||
+        [name containsString:@"promo"] || [name containsString:@"dialog"] || [name containsString:@"modal"]) {
+        return YES;
+    }
+    return NO;
+}
+
+static void SCISuppressPresentedViewControllerIfIntro(UIViewController *viewController) {
+    if (!SCIShouldSuppressFeatureIntros() || !viewController) return;
+
+    if (!SCIViewControllerLooksLikeFeatureIntro(viewController) && !SCIIsLikelyIntroPresentationClass(viewController)) {
+        return;
+    }
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (SCIViewControllerLooksLikeFeatureIntro(viewController)) {
+            NSLog(@"[SCInsta] Dismissing feature intro: %@", NSStringFromClass([viewController class]));
+            [viewController dismissViewControllerAnimated:YES completion:nil];
+        }
+    });
+}
+
+static BOOL SCIShouldBlockPresentationOfViewController(UIViewController *viewController) {
+    if (!SCIShouldSuppressFeatureIntros() || !viewController) return NO;
+
+    if (SCIViewControllerLooksLikeFeatureIntro(viewController)) return YES;
+
+    if (SCIIsLikelyIntroPresentationClass(viewController)) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            SCISuppressPresentedViewControllerIfIntro(viewController);
+        });
+    }
 
     return NO;
 }
@@ -112,6 +153,37 @@ static BOOL SCIViewControllerLooksLikeFeatureIntro(UIViewController *viewControl
     return %orig;
 }
 
+- (_Bool)nuxWithKeyIsCompleted:(id)key {
+    if (SCIShouldSuppressFeatureIntros()) return YES;
+    return %orig;
+}
+
+- (_Bool)canShowNUXBasedOnLastTimestampForKey:(id)key {
+    if (SCIShouldSuppressFeatureIntros()) return NO;
+    return %orig;
+}
+
+%end
+
+%hook IGViewController
+
+- (void)_superPresentViewController:(UIViewController *)viewControllerToPresent animated:(BOOL)flag completion:(id)completion {
+    if (SCIShouldBlockPresentationOfViewController(viewControllerToPresent)) {
+        NSLog(@"[SCInsta] Suppressed feature intro (_superPresent): %@", NSStringFromClass([viewControllerToPresent class]));
+        if (completion) ((void (^)(void))completion)();
+        return;
+    }
+    %orig;
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    if (SCIShouldSuppressFeatureIntros() && SCIViewControllerLooksLikeFeatureIntro(self)) {
+        NSLog(@"[SCInsta] Dismissing feature intro (viewDidAppear): %@", NSStringFromClass([self class]));
+        [self dismissViewControllerAnimated:YES completion:nil];
+    }
+}
+
 %end
 
 %hook UIViewController
@@ -119,8 +191,8 @@ static BOOL SCIViewControllerLooksLikeFeatureIntro(UIViewController *viewControl
 - (void)presentViewController:(UIViewController *)viewControllerToPresent
                      animated:(BOOL)flag
                    completion:(void (^)(void))completion {
-    if (SCIShouldSuppressFeatureIntros() && SCIViewControllerLooksLikeFeatureIntro(viewControllerToPresent)) {
-        NSLog(@"[SCInsta] Suppressed feature intro presentation: %@", NSStringFromClass([viewControllerToPresent class]));
+    if (SCIShouldBlockPresentationOfViewController(viewControllerToPresent)) {
+        NSLog(@"[SCInsta] Suppressed feature intro (present): %@", NSStringFromClass([viewControllerToPresent class]));
         if (completion) completion();
         return;
     }

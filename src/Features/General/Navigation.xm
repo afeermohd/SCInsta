@@ -2,42 +2,33 @@
 #import "../../Settings/SCIFeatureSchedule.h"
 
 BOOL isSurfaceShown(IGMainAppSurfaceIntent *surface) {
-    BOOL isShown = YES;
     NSString *tabString = [surface tabStringFromSurfaceIntent];
 
-    // Feed
+    if (![SCIFeatureSchedule isMainAppSurfaceAllowed:tabString]) {
+        return NO;
+    }
+
     if ([tabString isEqualToString:@"FEED"] && [SCIUtils getBoolPref:@"hide_feed_tab"]) {
-        isShown = NO;
+        return NO;
     }
-    
-    // Reels
-    else if ([tabString isEqualToString:@"CLIPS"] && [SCIUtils getBoolPref:@"hide_reels_tab"]) {
-        isShown = NO;
+    if ([tabString isEqualToString:@"CLIPS"] && [SCIUtils getBoolPref:@"hide_reels_tab"]) {
+        return NO;
     }
-
-    // Explore
-    else if ([tabString isEqualToString:@"SEARCH"] && [SCIUtils getBoolPref:@"hide_explore_tab"]) {
-        isShown = NO;
+    if ([tabString isEqualToString:@"SEARCH"] && [SCIUtils getBoolPref:@"hide_explore_tab"]) {
+        return NO;
     }
-
-    // Feature schedule limits (same mechanism as hide_* tabs)
-    else if (![SCIFeatureSchedule isMainAppSurfaceAllowed:tabString]) {
-        isShown = NO;
+    if ([(NSNumber *)[surface valueForKey:@"_subtype"] unsignedIntegerValue] == 3 && [SCIUtils getBoolPref:@"hide_create_tab"]) {
+        return NO;
     }
 
-    // Create
-    else if ([(NSNumber *)[surface valueForKey:@"_subtype"] unsignedIntegerValue] == 3 && [SCIUtils getBoolPref:@"hide_create_tab"]) {
-        isShown = NO;
-    }
-
-    return isShown;
+    return YES;
 }
 
 NSArray *filterSurfacesArray(NSArray *surfaces) {
     NSMutableArray *filteredSurfaces = [NSMutableArray array];
 
-    for (IGMainAppSurfaceIntent *surface in surfaces) {
-        if (![surface isKindOfClass:%c(IGMainAppSurfaceIntent)]) break;
+    for (id surface in surfaces) {
+        if (![surface isKindOfClass:%c(IGMainAppSurfaceIntent)]) continue;
 
         if (isSurfaceShown(surface)) {
             [filteredSurfaces addObject:surface];
