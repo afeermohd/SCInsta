@@ -343,6 +343,10 @@
 @interface IGDirectInboxConfig : NSObject
 @end
 
+@interface IGDirectNUXManager : NSObject
+- (void)markTooltipOfTypeAsCompleted:(unsigned long long)type;
+@end
+
 @interface IGDirectMediaPickerConfig : NSObject
 @end
 
