@@ -1,22 +1,24 @@
 #import "../../Utils.h"
 #import "../../Settings/SCIFeatureSchedule.h"
 
-static void SCIApplyScheduleForViewController(UIViewController *self, NSString *featureKey) {
+static void SCIApplyScheduleForViewController(id viewController, NSString *featureKey) {
+    UIViewController *vc = (UIViewController *)viewController;
+
     if (![SCIFeatureSchedule isScheduleEnabledForKey:featureKey]) {
-        [SCIFeatureSchedule hideBlockOverlayOnViewController:self];
+        [SCIFeatureSchedule hideBlockOverlayOnViewController:vc];
         [SCIFeatureSchedule endUseForKey:featureKey];
         return;
     }
 
     if (![SCIFeatureSchedule isAvailableForKey:featureKey]) {
         [SCIFeatureSchedule endUseForKey:featureKey];
-        [SCIFeatureSchedule showBlockOverlayOnViewController:self featureKey:featureKey];
+        [SCIFeatureSchedule showBlockOverlayOnViewController:vc featureKey:featureKey];
         return;
     }
 
-    [SCIFeatureSchedule hideBlockOverlayOnViewController:self];
+    [SCIFeatureSchedule hideBlockOverlayOnViewController:vc];
 
-    __weak UIViewController *weakSelf = self;
+    __weak UIViewController *weakSelf = vc;
     [SCIFeatureSchedule beginUseForKey:featureKey onBlocked:^{
         dispatch_async(dispatch_get_main_queue(), ^{
             UIViewController *strongSelf = weakSelf;
