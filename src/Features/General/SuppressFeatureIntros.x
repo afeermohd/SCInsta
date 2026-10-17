@@ -1,7 +1,9 @@
 #import "../../Utils.h"
 #import "../../InstagramHeaders.h"
+#import <objc/runtime.h>
 
 static NSString * const kSCIInstagramMapIntroCompletedKey = @"sci_instagram_map_intro_completed";
+static const void *kSCIMapIntroSheetAssociatedKey = &kSCIMapIntroSheetAssociatedKey;
 
 static BOOL SCIViewControllerLooksLikeFeatureIntro(UIViewController *viewController);
 static BOOL SCITextLooksLikeFeatureIntro(NSString *text);
@@ -14,8 +16,53 @@ static BOOL SCIInstagramMapIntroMarkedCompleted(void) {
     return [[NSUserDefaults standardUserDefaults] boolForKey:kSCIInstagramMapIntroCompletedKey];
 }
 
+static IGDirectNUXManager *SCINuxManagerFromInboxViewController(id inboxViewController) {
+    if (![inboxViewController isKindOfClass:%c(IGDirectInboxViewController)]) return nil;
+    @try {
+        id manager = [inboxViewController valueForKey:@"_nuxManager"];
+        if ([manager isKindOfClass:%c(IGDirectNUXManager)]) {
+            return (IGDirectNUXManager *)manager;
+        }
+    } @catch (__unused NSException *exception) {
+    }
+    return nil;
+}
+
+static IGDirectNUXManager *SCINuxManagerFromViewControllerTree(UIViewController *viewController) {
+    if (!viewController) return nil;
+
+    IGDirectNUXManager *manager = SCINuxManagerFromInboxViewController(viewController);
+    if (manager) return manager;
+
+    for (UIViewController *child in viewController.childViewControllers) {
+        manager = SCINuxManagerFromViewControllerTree(child);
+        if (manager) return manager;
+    }
+
+    return SCINuxManagerFromViewControllerTree(viewController.presentedViewController);
+}
+
+static IGDirectNUXManager *SCINuxManagerFromResponderChain(UIViewController *viewController) {
+    if (viewController) {
+        UIResponder *responder = viewController.view ?: (UIResponder *)viewController;
+        while (responder) {
+            IGDirectNUXManager *manager = SCINuxManagerFromInboxViewController(responder);
+            if (manager) return manager;
+            responder = responder.nextResponder;
+        }
+    }
+
+    for (UIWindow *window in [UIApplication sharedApplication].windows) {
+        IGDirectNUXManager *manager = SCINuxManagerFromViewControllerTree(window.rootViewController);
+        if (manager) return manager;
+    }
+
+    return nil;
+}
+
 static void SCIMarkInstagramMapIntroCompleted(IGDirectNUXManager *nuxManager) {
-    [[NSUserDefaults standardUserDefaults] setBool:YES forKey:kSCIInstagramMapIntroCompletedKey];
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    [defaults setBool:YES forKey:kSCIInstagramMapIntroCompletedKey];
 
     NSArray<NSString *> *keys = @[
         @"friends_map",
@@ -23,12 +70,43 @@ static void SCIMarkInstagramMapIntroCompleted(IGDirectNUXManager *nuxManager) {
         @"direct_friends_map",
         @"direct_map_nux",
         @"map_nux",
+        @"direct_inbox_friends_map",
+        @"direct_inbox_map_nux",
+        @"direct_notes_friends_map",
+        @"FRIENDS_MAP",
+        @"INSTAGRAM_MAP",
     ];
 
-    if (nuxManager) {
+    for (NSString *key in keys) {
+        [defaults setBool:YES forKey:key];
+        [defaults setInteger:999 forKey:[NSString stringWithFormat:@"%@_impression_count", key]];
+    }
+
+    IGDirectNUXManager *manager = nuxManager ?: SCINuxManagerFromResponderChain(nil);
+
+    if (manager) {
         for (NSString *key in keys) {
-            [nuxManager markNuxAsCompletedWithKey:key];
+            [manager markNuxAsCompletedWithKey:key];
         }
+    }
+
+    [defaults synchronize];
+}
+
+static void SCINoteMapIntroSheet(UIViewController *sheet) {
+    if (!sheet) return;
+    objc_setAssociatedObject(sheet, kSCIMapIntroSheetAssociatedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static BOOL SCIMapIntroSheetWasNoted(UIViewController *sheet) {
+    if (!sheet) return NO;
+    return [objc_getAssociatedObject(sheet, kSCIMapIntroSheetAssociatedKey) boolValue];
+}
+
+static void SCIScanPartialModalForMapIntroAndNote(UIViewController *sheet) {
+    if (!sheet) return;
+    if (SCIIsInstagramMapIntroSheet(sheet)) {
+        SCINoteMapIntroSheet(sheet);
     }
 }
 
@@ -205,10 +283,40 @@ static void SCIDismissInstagramMapIntroSheet(UIViewController *sheet) {
     [sheet dismissViewControllerAnimated:NO completion:finish];
 }
 
+static BOOL SCIInboxHostedPartialSheet(UIViewController *sheet) {
+    UIResponder *responder = sheet.view ?: (UIResponder *)sheet;
+    while (responder) {
+        if ([responder isKindOfClass:%c(IGDirectInboxViewController)]) return YES;
+        responder = responder.nextResponder;
+    }
+    return NO;
+}
+
+static BOOL SCIShouldDismissRepeatMapIntroSheet(UIViewController *sheet) {
+    if (!sheet || !SCIInstagramMapIntroMarkedCompleted()) return NO;
+    if (![NSStringFromClass([sheet class]) containsString:@"PartialModal"]) return NO;
+    if (!SCIInboxHostedPartialSheet(sheet)) return NO;
+    return SCIIsInstagramMapIntroSheet(sheet) || SCIMapIntroSheetWasNoted(sheet);
+}
+
 static void SCIHandleInstagramMapIntroSheetIfNeeded(UIViewController *sheet) {
-    if (!sheet || !SCIShouldSkipInstagramMapIntro()) return;
+    if (!sheet) return;
+
+    if (SCIShouldDismissRepeatMapIntroSheet(sheet)) {
+        SCIDismissInstagramMapIntroSheet(sheet);
+        return;
+    }
+
+    if (!SCIShouldSkipInstagramMapIntro()) return;
     if (!SCIIsInstagramMapIntroSheet(sheet)) return;
     SCIDismissInstagramMapIntroSheet(sheet);
+}
+
+static void SCIMarkMapIntroCompletedIfNotedSheet(UIViewController *sheet) {
+    if (!sheet) return;
+    if (SCIMapIntroSheetWasNoted(sheet) || SCIIsInstagramMapIntroSheet(sheet)) {
+        SCIMarkInstagramMapIntroCompleted(SCINuxManagerFromResponderChain(sheet));
+    }
 }
 
 static void SCICleanupStaleMapIntroDimmingIfCompleted(void) {
@@ -294,14 +402,21 @@ static void SCICleanupStaleMapIntroDimmingIfCompleted(void) {
     return %orig;
 }
 
+- (void)markNuxAsCompletedWithKey:(id)key {
+    %orig;
+    if (SCIKeyLooksLikeMapIntroNUX(key)) {
+        SCIMarkInstagramMapIntroCompleted(self);
+    }
+}
+
 %end
 
 %hook IGDirectInboxViewController
 
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
-    if (SCIShouldSuppressFeatureIntros()) {
-        SCIMarkInstagramMapIntroCompleted(nil);
+    if (SCIInstagramMapIntroMarkedCompleted() || SCIShouldSuppressFeatureIntros()) {
+        SCIMarkInstagramMapIntroCompleted(SCINuxManagerFromResponderChain(self));
     }
     SCICleanupStaleMapIntroDimmingIfCompleted();
 }
@@ -310,22 +425,38 @@ static void SCICleanupStaleMapIntroDimmingIfCompleted(void) {
 
 %hook IGPartialModalSheetViewController
 
+- (void)viewWillAppear:(BOOL)animated {
+    if (SCIShouldDismissRepeatMapIntroSheet(self)) {
+        SCIDismissInstagramMapIntroSheet(self);
+        return;
+    }
+    %orig;
+}
+
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
+
+    SCIScanPartialModalForMapIntroAndNote(self);
     SCIHandleInstagramMapIntroSheetIfNeeded(self);
 
-    if (!SCIShouldSkipInstagramMapIntro()) return;
-
     __weak IGPartialModalSheetViewController *weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        SCIHandleInstagramMapIntroSheetIfNeeded(weakSelf);
-    });
+    for (NSTimeInterval delay in @[ @0.35, @1.0, @2.0 ]) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            SCIScanPartialModalForMapIntroAndNote(weakSelf);
+            SCIHandleInstagramMapIntroSheetIfNeeded(weakSelf);
+        });
+    }
 }
 
 - (void)viewDidDisappear:(BOOL)animated {
+    SCIMarkMapIntroCompletedIfNotedSheet(self);
     %orig;
-    if (SCIIsInstagramMapIntroSheet(self)) {
-        SCIMarkInstagramMapIntroCompleted(nil);
+}
+
+- (void)_setTargetStateWithDefaultAnimation:(unsigned long long)state {
+    %orig;
+    if (state == 0) {
+        SCIMarkMapIntroCompletedIfNotedSheet(self);
     }
 }
 
@@ -339,10 +470,8 @@ static void SCICleanupStaleMapIntroDimmingIfCompleted(void) {
 }
 
 - (void)viewDidDisappear:(BOOL)animated {
+    SCIMarkMapIntroCompletedIfNotedSheet(self);
     %orig;
-    if (SCIIsInstagramMapIntroSheet(self)) {
-        SCIMarkInstagramMapIntroCompleted(nil);
-    }
 }
 
 %end
