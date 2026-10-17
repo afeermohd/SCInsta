@@ -6,6 +6,7 @@ static BOOL SCIShouldSuppressFeatureIntros(void) {
 }
 
 static BOOL SCIViewControllerLooksLikeFeatureIntro(UIViewController *viewController);
+static BOOL SCITextLooksLikeFeatureIntro(NSString *text);
 
 static NSString *SCICollectVisibleTextInView(UIView *view, NSUInteger depth) {
     if (!view || depth > 25) return @"";
@@ -99,11 +100,74 @@ static BOOL SCIViewControllerTreeLooksLikeFeatureIntro(UIViewController *viewCon
     return NO;
 }
 
+static BOOL SCIIsPartialModalSheetViewController(UIViewController *viewController) {
+    if (!viewController) return NO;
+    NSString *name = NSStringFromClass([viewController class]);
+    return [name containsString:@"IGPartialModalSheetViewController"];
+}
+
+static void SCIRemoveViewFromHierarchy(UIView *view) {
+    if (!view || !view.superview) return;
+    [view removeFromSuperview];
+}
+
+static void SCIRemovePartialModalChromeFromSheet(UIViewController *sheet) {
+    if (!sheet) return;
+
+    for (NSString *key in @[ @"_dimmingView", @"_maskingView", @"_blurBackgroundView", @"_backgroundView", @"_containerView" ]) {
+        @try {
+            SCIRemoveViewFromHierarchy([sheet valueForKey:key]);
+        } @catch (__unused NSException *exception) {
+        }
+    }
+
+    SCIRemoveViewFromHierarchy(sheet.view);
+}
+
+static BOOL SCIViewLooksLikePartialModalDimmingOverlay(UIView *view) {
+    if (!view || view.hidden || view.alpha < 0.05) return NO;
+
+    NSString *name = NSStringFromClass([view class]);
+    if (![name containsString:@"DelegatedHitTest"] && ![name containsString:@"Dimming"]) {
+        return NO;
+    }
+
+    if (view.alpha > 0.95) return NO;
+
+    UIWindow *window = view.window;
+    if (!window) return NO;
+
+    CGRect frameInWindow = [view convertRect:view.bounds toView:window];
+    CGFloat viewArea = CGRectGetWidth(frameInWindow) * CGRectGetHeight(frameInWindow);
+    CGFloat windowArea = CGRectGetWidth(window.bounds) * CGRectGetHeight(window.bounds);
+    if (windowArea <= 0 || viewArea < windowArea * 0.75) return NO;
+
+    return SCITextLooksLikeFeatureIntro(SCICollectVisibleTextInView(view, 0)) == NO;
+}
+
+static void SCICleanupOrphanPartialModalDimmingOverlays(void) {
+    if (!SCIShouldSuppressFeatureIntros()) return;
+
+    for (UIWindow *window in [UIApplication sharedApplication].windows) {
+        for (UIView *subview in [window.subviews copy]) {
+            if (SCIViewLooksLikePartialModalDimmingOverlay(subview)) {
+                [subview removeFromSuperview];
+                NSLog(@"[SCInsta] Removed orphan partial-modal dimming overlay");
+            }
+        }
+    }
+}
+
 static void SCITeardownIntroViewController(UIViewController *viewController) {
     if (!viewController) return;
 
+    if (SCIIsPartialModalSheetViewController(viewController)) {
+        SCIRemovePartialModalChromeFromSheet(viewController);
+    }
+
     if (viewController.presentingViewController) {
         [viewController.presentingViewController dismissViewControllerAnimated:NO completion:nil];
+        SCICleanupOrphanPartialModalDimmingOverlays();
         return;
     }
 
@@ -111,7 +175,14 @@ static void SCITeardownIntroViewController(UIViewController *viewController) {
         [viewController willMoveToParentViewController:nil];
         [viewController.view removeFromSuperview];
         [viewController removeFromParentViewController];
+        SCICleanupOrphanPartialModalDimmingOverlays();
     }
+}
+
+static void SCIHandleBlockedIntroPresentation(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        SCICleanupOrphanPartialModalDimmingOverlays();
+    });
 }
 
 static BOOL SCITextLooksLikeFeatureIntro(NSString *text) {
@@ -160,8 +231,6 @@ static BOOL SCIViewControllerLooksLikeFeatureIntro(UIViewController *viewControl
 static BOOL SCIIsBlockedIntroPresentationClass(UIViewController *viewController) {
     NSString *name = NSStringFromClass([viewController class]);
 
-    if ([name containsString:@"IGPartialModalSheetViewController"]) return YES;
-    if ([name containsString:@"IGPartialModalSheetNavigationController"]) return YES;
     if ([name containsString:@"Bloks"] && ([name containsString:@"Modal"] || [name containsString:@"Sheet"])) return YES;
     if ([name containsString:@"BottomSheet"] && [name containsString:@"Bloks"]) return YES;
     if (SCIClassNameSignalsFeatureIntro(name)) return YES;
@@ -174,6 +243,17 @@ static BOOL SCIShouldBlockPresentationOfViewController(UIViewController *viewCon
 
     if (SCIViewControllerTreeLooksLikeFeatureIntro(viewController, 0)) return YES;
     if (SCIIsBlockedIntroPresentationClass(viewController)) return YES;
+
+    return NO;
+}
+
+static BOOL SCIInboxShouldBlockPartialModalPresentation(UIViewController *viewController) {
+    if (!SCIShouldSuppressFeatureIntros() || !viewController) return NO;
+    if (SCIShouldBlockPresentationOfViewController(viewController)) return YES;
+
+    NSString *name = NSStringFromClass([viewController class]);
+    if ([name containsString:@"IGPartialModalSheetViewController"]) return YES;
+    if ([name containsString:@"IGPartialModalSheetNavigationController"]) return YES;
 
     return NO;
 }
@@ -254,6 +334,7 @@ static BOOL SCIShouldBlockPresentationOfViewController(UIViewController *viewCon
     if (SCIShouldBlockPresentationOfViewController(viewControllerToPresent)) {
         NSLog(@"[SCInsta] Blocked feature intro (_superPresent): %@", NSStringFromClass([viewControllerToPresent class]));
         if (completion) ((void (^)(void))completion)();
+        SCIHandleBlockedIntroPresentation();
         return;
     }
     %orig;
@@ -267,6 +348,7 @@ static BOOL SCIShouldBlockPresentationOfViewController(UIViewController *viewCon
     if (SCIShouldBlockPresentationOfViewController(viewControllerToPresent)) {
         NSLog(@"[SCInsta] Blocked feature intro (feed header _superPresent): %@", NSStringFromClass([viewControllerToPresent class]));
         if (completion) ((void (^)(void))completion)();
+        SCIHandleBlockedIntroPresentation();
         return;
     }
     %orig;
@@ -276,21 +358,30 @@ static BOOL SCIShouldBlockPresentationOfViewController(UIViewController *viewCon
 
 %hook IGDirectInboxViewController
 
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    if (SCIShouldSuppressFeatureIntros()) {
+        SCICleanupOrphanPartialModalDimmingOverlays();
+    }
+}
+
 - (void)presentViewController:(UIViewController *)viewControllerToPresent
                      animated:(BOOL)flag
                    completion:(void (^)(void))completion {
-    if (SCIShouldBlockPresentationOfViewController(viewControllerToPresent)) {
+    if (SCIInboxShouldBlockPartialModalPresentation(viewControllerToPresent)) {
         NSLog(@"[SCInsta] Blocked inbox intro (present): %@", NSStringFromClass([viewControllerToPresent class]));
         if (completion) completion();
+        SCIHandleBlockedIntroPresentation();
         return;
     }
     %orig;
 }
 
 - (void)_superPresentViewController:(UIViewController *)viewControllerToPresent animated:(BOOL)flag completion:(id)completion {
-    if (SCIShouldBlockPresentationOfViewController(viewControllerToPresent)) {
+    if (SCIInboxShouldBlockPartialModalPresentation(viewControllerToPresent)) {
         NSLog(@"[SCInsta] Blocked inbox intro (_superPresent): %@", NSStringFromClass([viewControllerToPresent class]));
         if (completion) ((void (^)(void))completion)();
+        SCIHandleBlockedIntroPresentation();
         return;
     }
     %orig;
@@ -306,6 +397,7 @@ static BOOL SCIShouldBlockPresentationOfViewController(UIViewController *viewCon
     if (SCIShouldBlockPresentationOfViewController(viewControllerToPresent)) {
         NSLog(@"[SCInsta] Blocked feature intro (present): %@", NSStringFromClass([viewControllerToPresent class]));
         if (completion) completion();
+        SCIHandleBlockedIntroPresentation();
         return;
     }
     %orig;
@@ -314,6 +406,7 @@ static BOOL SCIShouldBlockPresentationOfViewController(UIViewController *viewCon
 - (void)addChildViewController:(UIViewController *)childController {
     if (SCIShouldBlockPresentationOfViewController(childController)) {
         NSLog(@"[SCInsta] Blocked feature intro (addChild): %@", NSStringFromClass([childController class]));
+        SCIHandleBlockedIntroPresentation();
         return;
     }
     %orig;
@@ -341,6 +434,13 @@ static BOOL SCIPartialModalSheetShouldBeSuppressed(UIViewController *sheet) {
 
 %hook IGPartialModalSheetViewController
 
+- (void)viewDidLoad {
+    %orig;
+    if (SCIPartialModalSheetShouldBeSuppressed(self)) {
+        SCITeardownIntroViewController(self);
+    }
+}
+
 - (void)viewWillAppear:(BOOL)animated {
     if (SCIPartialModalSheetShouldBeSuppressed(self)) {
         SCITeardownIntroViewController(self);
@@ -355,6 +455,13 @@ static BOOL SCIPartialModalSheetShouldBeSuppressed(UIViewController *sheet) {
         return;
     }
     %orig;
+}
+
+- (void)viewDidDisappear:(BOOL)animated {
+    %orig;
+    if (SCIShouldSuppressFeatureIntros()) {
+        SCICleanupOrphanPartialModalDimmingOverlays();
+    }
 }
 
 %end
@@ -379,10 +486,11 @@ static BOOL SCIPartialModalSheetShouldBeSuppressed(UIViewController *sheet) {
 
     SCIStripIntroOverlayIfPresentInView(view);
 
-    __weak UIView *weakView = view;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        SCIStripIntroOverlayIfPresentInView(weakView);
-    });
+    if (SCIViewLooksLikePartialModalDimmingOverlay(view)) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            SCICleanupOrphanPartialModalDimmingOverlays();
+        });
+    }
 }
 
 %end
