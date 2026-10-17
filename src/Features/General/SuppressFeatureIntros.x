@@ -7,6 +7,7 @@ static const void *kSCIMapIntroSheetAssociatedKey = &kSCIMapIntroSheetAssociated
 
 static BOOL SCIViewControllerLooksLikeFeatureIntro(UIViewController *viewController);
 static BOOL SCITextLooksLikeFeatureIntro(NSString *text);
+static BOOL SCIIsInstagramMapIntroSheet(UIViewController *sheet);
 
 static BOOL SCIShouldSuppressFeatureIntros(void) {
     return [SCIUtils getBoolPref:@"suppress_feature_intros"];
@@ -440,8 +441,9 @@ static void SCICleanupStaleMapIntroDimmingIfCompleted(void) {
     SCIHandleInstagramMapIntroSheetIfNeeded(self);
 
     __weak IGPartialModalSheetViewController *weakSelf = self;
-    for (NSTimeInterval delay in @[ @0.35, @1.0, @2.0 ]) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    for (NSNumber *delayNumber in @[ @0.35, @1.0, @2.0 ]) {
+        NSTimeInterval delay = delayNumber.doubleValue;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             SCIScanPartialModalForMapIntroAndNote(weakSelf);
             SCIHandleInstagramMapIntroSheetIfNeeded(weakSelf);
         });
