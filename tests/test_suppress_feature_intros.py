@@ -32,6 +32,8 @@ PREAMBLE = r'''
 static NSUserDefaults *SCITestDefaults;
 static NSString * const kSCIInstagramMapIntroCompletedKey = @"sci_instagram_map_intro_completed";
 static NSString * const kSCIInstagramMapIntroPromotionIDsKey = @"sci_instagram_map_intro_promotion_ids";
+static const void *kSCIMapIntroSheetAssociatedKey = &kSCIMapIntroSheetAssociatedKey;
+static const void *kSCIMapIntroDismissingAssociatedKey = &kSCIMapIntroDismissingAssociatedKey;
 static BOOL SCIShouldSuppressFeatureIntros(void) {
     return [SCITestDefaults boolForKey:@"suppress_feature_intros"];
 }
@@ -45,9 +47,30 @@ static BOOL SCIShouldSuppressFeatureIntros(void) {
 - (_Bool)eligible:(id)p trigger:(id)t surface:(id)s context:(id)c block:(void (^)(void))b debugInfo:(id *)d { return YES; }
 - (void)changed:(id)presenter event:(NSInteger)event {}
 @end
+@interface SCIMapPromoDialogView : NSObject
+@property(nonatomic, copy) id title;
+@property(nonatomic, strong) id window;
+@property(nonatomic) NSUInteger secondaryActionCount;
+@property(nonatomic) BOOL reenterShow;
+- (void)secondaryActionTapped:(id)sender;
+@end
+@interface IGCustomAlertViewController : NSObject {
+@public
+    id _alertView;
+}
+@end
+@implementation IGCustomAlertViewController
+@end
 '''
 
 TESTS = r'''
+@implementation SCIMapPromoDialogView
+- (void)secondaryActionTapped:(id)sender {
+    self.secondaryActionCount++;
+    if (self.reenterShow) assert(SCIHandleMapIntroPromoDialogBeforeShow(self));
+}
+@end
+
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         assert(argc == 3);
@@ -71,6 +94,8 @@ int main(int argc, const char *argv[]) {
         assert(!SCIInstagramMapIntroMarkedCompleted());
         assert(!SCIShouldSkipInstagramMapIntro());
         assert(SCITextLooksLikeFeatureIntro(@"Introducing Instagram Map"));
+        assert(SCITextLooksLikeFeatureIntro(@"Introducing the Instagram map"));
+        assert(SCITextLooksLikeFeatureIntro(@"Introducing the\nInstagram\n\nmap"));
         assert(SCITextLooksLikeFeatureIntro(@"Discover Instagram Map"));
         assert(SCITextLooksLikeFeatureIntro(@"Introducing Friends Map"));
         assert(!SCITextLooksLikeFeatureIntro(@"Introducing a new sitemap"));
@@ -110,10 +135,50 @@ int main(int argc, const char *argv[]) {
         assert(!SCIIntroMethodHasSignature([SCITestQP class], NSSelectorFromString(@"missing"), @encode(void), @[]));
         assert(!SCIIntroMethodHasSignature(Nil, @selector(finished:event:), @encode(void), @[@"@", @"@"]));
 
+        SCIMapPromoDialogView *dialog = [SCIMapPromoDialogView new];
+        dialog.title = @"Introducing the Instagram map";
+        assert(SCIIsInstagramMapIntroPromoDialog(dialog));
+        assert(!SCIHandleMapIntroPromoDialogBeforeShow(dialog)); // OFF: allow first show.
+        assert(SCIMapIntroSheetWasNoted(dialog));
+        assert(dialog.secondaryActionCount == 0);
+        assert(!SCIInstagramMapIntroMarkedCompleted());
+        IGCustomAlertViewController *root = [IGCustomAlertViewController new];
+        root->_alertView = dialog;
+        NSDictionary *popover = @{@"navigationController": @{@"topViewController": root}};
+        assert(SCIMapIntroPromoDialogFromPopover(popover, [SCIMapPromoDialogView class]) == dialog);
+        assert(SCIMapIntroPromoDialogFromPopover(popover, [NSString class]) == nil);
+        assert(SCIMapIntroPromoDialogFromPopover(@{@"navigationController": @{@"topViewController": [NSObject new]}}, [SCIMapPromoDialogView class]) == nil);
+        assert(SCIMapIntroPromoDialogFromPopover([NSObject new], [SCIMapPromoDialogView class]) == nil);
+
         [SCITestDefaults setBool:YES forKey:@"suppress_feature_intros"];
         assert(SCIShouldSkipInstagramMapIntro());
         assert(!SCIInstagramMapIntroMarkedCompleted());
+        dialog.window = [NSObject new]; // A displayed card awaiting native removal.
+        dialog.reenterShow = YES;
+        assert(SCIHandleMapIntroPromoDialogBeforeShow(dialog)); // ON: native Not now.
+        assert(SCIHandleMapIntroPromoDialogBeforeShow(dialog)); // No repeated native action.
+        assert(dialog.secondaryActionCount == 1);
+        assert(SCIInstagramMapIntroMarkedCompleted());
         [SCITestDefaults setBool:NO forKey:@"suppress_feature_intros"];
+
+        SCIMapPromoDialogView *repeat = [SCIMapPromoDialogView new];
+        repeat.title = [[NSAttributedString alloc] initWithString:@"Introducing the Instagram map"];
+        assert(SCIHandleMapIntroPromoDialogBeforeShow(repeat)); // OFF + completed: skip.
+        assert(repeat.secondaryActionCount == 1);
+        SCIMapPromoDialogView *prePresentation = [SCIMapPromoDialogView new];
+        prePresentation.title = @"Introducing the Instagram map";
+        prePresentation.reenterShow = YES;
+        assert(SCIHandleMapIntroPromoDialogBeforeShow(prePresentation));
+        assert(prePresentation.secondaryActionCount == 1);
+        assert(SCIHandleMapIntroPromoDialogBeforeShow(prePresentation));
+        assert(prePresentation.secondaryActionCount == 2); // New attempt, not a stuck guard.
+        repeat.title = @"Introducing reactions"; // Reused card: do not dismiss unrelated QP.
+        assert(!SCIHandleMapIntroPromoDialogBeforeShow(repeat));
+        assert(!SCIMapIntroSheetWasNoted(repeat));
+        assert(repeat.secondaryActionCount == 1);
+        repeat.title = @"Instagram Map"; // Actual Map UI is not the intro.
+        assert(!SCIHandleMapIntroPromoDialogBeforeShow(repeat));
+
         SCIMarkInstagramMapIntroCompleted();
         SCIMarkInstagramMapIntroCompleted(); // Idempotent; no NUX callback/recursion.
         assert(SCIInstagramMapIntroMarkedCompleted());
@@ -131,10 +196,15 @@ def main():
         "SCIInstagramMapIntroMarkedCompleted",
         "SCIMarkInstagramMapIntroCompleted",
         "SCIShouldSkipInstagramMapIntro",
+        "SCINoteMapIntroSheet",
+        "SCIMapIntroSheetWasNoted",
         "SCIKeyLooksLikeMapIntroNUX",
         "SCIClassNameSignalsFeatureIntro",
         "SCITextLooksLikeFeatureIntro",
         "SCIIntroValueForKey",
+        "SCIIsInstagramMapIntroPromoDialog",
+        "SCIHandleMapIntroPromoDialogBeforeShow",
+        "SCIMapIntroPromoDialogFromPopover",
         "SCIMapIntroMetadataMatches",
         "SCIIsInstagramMapIntroPromotion",
         "SCIIntroMethodHasSignature",
@@ -153,7 +223,7 @@ def main():
                 subprocess.run([str(executable), suite, mode], check=True)
         finally:
             subprocess.run([str(executable), suite, "cleanup"], check=True)
-    print("PASS: intro matching, QP IDs, ABI guards, and completion across process restart")
+    print("PASS: native promo-card skip/reentrancy/reuse, intro matching, QP IDs, ABI guards, and restart persistence")
 
 
 if __name__ == "__main__":

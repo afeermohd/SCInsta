@@ -7,6 +7,13 @@ static NSString * const kSCIInstagramMapIntroPromotionIDsKey = @"sci_instagram_m
 static const void *kSCIMapIntroSheetAssociatedKey = &kSCIMapIntroSheetAssociatedKey;
 static const void *kSCIMapIntroScanAssociatedKey = &kSCIMapIntroScanAssociatedKey;
 static const void *kSCIMapIntroDismissingAssociatedKey = &kSCIMapIntroDismissingAssociatedKey;
+static const void *kSCIMapIntroPromoVisibleAssociatedKey = &kSCIMapIntroPromoVisibleAssociatedKey;
+
+// Objective-C entry points verified in the decrypted Instagram 418.2.0 binary.
+// Logos binds this local name to the Swift runtime class in %ctor.
+@interface SCIMapPromoDialogView : UIView
+- (void)secondaryActionTapped:(id)sender;
+@end
 
 static BOOL SCIViewControllerLooksLikeFeatureIntro(UIViewController *viewController);
 static BOOL SCITextLooksLikeFeatureIntro(NSString *text);
@@ -29,12 +36,12 @@ static void SCIMarkInstagramMapIntroCompleted(void) {
     [defaults synchronize];
 }
 
-static void SCINoteMapIntroSheet(UIViewController *sheet) {
+static void SCINoteMapIntroSheet(id sheet) {
     if (!sheet) return;
     objc_setAssociatedObject(sheet, kSCIMapIntroSheetAssociatedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-static BOOL SCIMapIntroSheetWasNoted(UIViewController *sheet) {
+static BOOL SCIMapIntroSheetWasNoted(id sheet) {
     if (!sheet) return NO;
     return [objc_getAssociatedObject(sheet, kSCIMapIntroSheetAssociatedKey) boolValue];
 }
@@ -117,6 +124,7 @@ static UIViewController *SCIRepresentativeContentViewController(UIViewController
 static BOOL SCITextLooksLikeFeatureIntro(NSString *text) {
     if (!text.length) return NO;
     NSString *lower = text.lowercaseString;
+    lower = [lower stringByReplacingOccurrencesOfString:@"\\s+" withString:@" " options:NSRegularExpressionSearch range:NSMakeRange(0, lower.length)];
     BOOL isMap = [lower containsString:@"instagram map"] || [lower containsString:@"friends map"];
     return isMap && ([lower containsString:@"introducing"] || [lower containsString:@"discover"]);
 }
@@ -128,6 +136,85 @@ static id SCIIntroValueForKey(id object, NSString *key) {
     } @catch (__unused NSException *exception) {
     }
     return nil;
+}
+
+static BOOL SCIIsInstagramMapIntroPromoDialog(id dialog) {
+    id title = SCIIntroValueForKey(dialog, @"title");
+    if ([title isKindOfClass:[NSAttributedString class]]) title = [title string];
+    // The promo's title is available before its labels or presentation exist.
+    return [title isKindOfClass:[NSString class]] && SCITextLooksLikeFeatureIntro(title);
+}
+
+static BOOL SCIHandleMapIntroPromoDialogBeforeShow(id dialog) {
+    if (!SCIIsInstagramMapIntroPromoDialog(dialog)) {
+        // The same dialog object may be configured for a different promotion later.
+        objc_setAssociatedObject(dialog, kSCIMapIntroSheetAssociatedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(dialog, kSCIMapIntroDismissingAssociatedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return NO;
+    }
+    SCINoteMapIntroSheet(dialog);
+    if (!SCIShouldSkipInstagramMapIntro()) return NO;
+    if ([objc_getAssociatedObject(dialog, kSCIMapIntroDismissingAssociatedKey) boolValue]) return YES;
+    objc_setAssociatedObject(dialog, kSCIMapIntroDismissingAssociatedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // Route through the configured native "Not now" action/delegate, not a
+    // fabricated QP event. Never remove the card or its dimming ourselves.
+    @try {
+        [(SCIMapPromoDialogView *)dialog secondaryActionTapped:nil];
+        SCIMarkInstagramMapIntroCompleted();
+    } @finally {
+        // A skipped, never-attached dialog may be reused for another attempt.
+        // Retain the guard only while a visible card is finishing dismissal.
+        if (!SCIIntroValueForKey(dialog, @"window")) {
+            objc_setAssociatedObject(dialog, kSCIMapIntroDismissingAssociatedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    }
+    return YES;
+}
+
+static id SCIMapIntroPromoDialogFromPopover(id popover, Class promoDialogClass) {
+    id navigation = SCIIntroValueForKey(popover, @"navigationController");
+    id root = SCIIntroValueForKey(navigation, @"topViewController");
+    if (![root isKindOfClass:NSClassFromString(@"IGCustomAlertViewController")]) return nil;
+    // Verified object ivar in 418.2.0; do not load a VC's view to identify it.
+    Ivar alertViewIvar = class_getInstanceVariable([root class], "_alertView");
+    const char *encoding = alertViewIvar ? ivar_getTypeEncoding(alertViewIvar) : NULL;
+    if (!encoding || encoding[0] != '@') return nil;
+    id alertView = object_getIvar(root, alertViewIvar);
+    return [alertView isKindOfClass:promoDialogClass] ? alertView : nil;
+}
+
+static void SCIScanMapIntroPromoDialog(UIView *dialog) {
+    if (!dialog.window || !SCIIsInstagramMapIntroPromoDialog(dialog)) return;
+    SCINoteMapIntroSheet(dialog);
+    if (!SCIShouldSkipInstagramMapIntro()) return;
+    __weak UIView *weakDialog = dialog;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIView *currentDialog = weakDialog;
+        if (!currentDialog.window) return;
+        for (UIResponder *responder = currentDialog; responder; responder = responder.nextResponder) {
+            if (![responder isKindOfClass:[UIViewController class]]) continue;
+            for (UIViewController *owner = (UIViewController *)responder; owner; owner = owner.parentViewController) {
+                if (owner.isBeingPresented || owner.isBeingDismissed) return;
+            }
+            break;
+        }
+        SCIHandleMapIntroPromoDialogBeforeShow(currentDialog);
+    });
+}
+
+static void SCIWatchMapIntroPromoDialog(UIView *dialog) {
+    NSObject *generation = [NSObject new];
+    objc_setAssociatedObject(dialog, kSCIMapIntroScanAssociatedKey, generation, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    SCIScanMapIntroPromoDialog(dialog);
+    __weak UIView *weakDialog = dialog;
+    for (NSNumber *delay in @[ @0.25, @0.5, @1.0, @1.5, @2.0 ]) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            UIView *currentDialog = weakDialog;
+            if (currentDialog && objc_getAssociatedObject(currentDialog, kSCIMapIntroScanAssociatedKey) == generation) {
+                SCIScanMapIntroPromoDialog(currentDialog);
+            }
+        });
+    }
 }
 
 static BOOL SCIMapIntroMetadataMatches(id value, NSUInteger depth, NSUInteger *budget) {
@@ -426,6 +513,75 @@ static void SCIDidDisappearMapIntroSheet(UIViewController *sheet) {
 %end
 %end
 
+%group SCIMapIntroPromoDialog
+%hook SCIMapPromoDialogView
+
+- (void)secondaryActionTapped:(id)sender {
+    BOOL isMapIntro = SCIIsInstagramMapIntroPromoDialog(self);
+    if (isMapIntro) {
+        SCINoteMapIntroSheet(self);
+        objc_setAssociatedObject(self, kSCIMapIntroDismissingAssociatedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    %orig;
+    if (isMapIntro) SCIMarkInstagramMapIntroCompleted();
+}
+
+- (void)primaryActionTapped:(id)sender {
+    BOOL isMapIntro = SCIIsInstagramMapIntroPromoDialog(self);
+    if (isMapIntro) objc_setAssociatedObject(self, kSCIMapIntroDismissingAssociatedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    %orig;
+    if (isMapIntro) SCIMarkInstagramMapIntroCompleted();
+}
+
+- (void)dismissAlertView:(id)sender {
+    if (SCIIsInstagramMapIntroPromoDialog(self)) SCINoteMapIntroSheet(self);
+    %orig;
+    // This is a backdrop gesture handler and may ignore taps inside the card.
+    // Only removal from its window below confirms an actual outside dismissal.
+}
+
+- (void)didMoveToWindow {
+    %orig;
+    // Fallback for alternate hosts: never manually tear down a displayed card.
+    UIView *dialogView = (UIView *)self;
+    if (dialogView.window) {
+        if (![objc_getAssociatedObject(self, kSCIMapIntroPromoVisibleAssociatedKey) boolValue]) {
+            objc_setAssociatedObject(self, kSCIMapIntroSheetAssociatedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(self, kSCIMapIntroDismissingAssociatedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        objc_setAssociatedObject(self, kSCIMapIntroPromoVisibleAssociatedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        SCIWatchMapIntroPromoDialog(self);
+    } else {
+        objc_setAssociatedObject(self, kSCIMapIntroScanAssociatedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if ([objc_getAssociatedObject(self, kSCIMapIntroPromoVisibleAssociatedKey) boolValue] && SCIMapIntroSheetWasNoted(self)) {
+            SCIMarkInstagramMapIntroCompleted();
+        }
+        objc_setAssociatedObject(self, kSCIMapIntroPromoVisibleAssociatedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
+- (void)layoutSubviews {
+    %orig;
+    SCIScanMapIntroPromoDialog(self);
+}
+
+%end
+%end
+
+%group SCIMapIntroPopover
+%hook IGPopoverController
+
+- (void)present {
+    id dialog = SCIMapIntroPromoDialogFromPopover(self, NSClassFromString(@"_TtC15IGDSPromoDialog19IGDSPromoDialogView"));
+    // This is the native card presenter, before it creates any backdrop. Unlike
+    // Swift show thunks, this ObjC entry also covers Swift-to-Swift dialog calls.
+    if (dialog && SCIHandleMapIntroPromoDialogBeforeShow(dialog)) return;
+    %orig;
+}
+
+%end
+%end
+
 %hook IGPartialModalSheetViewController
 
 - (void)viewDidAppear:(BOOL)animated {
@@ -512,6 +668,18 @@ static BOOL SCIIntroMethodHasSignature(Class cls, SEL selector, const char *retu
 
 %ctor {
     %init;
+    Class promoDialogClass = NSClassFromString(@"_TtC15IGDSPromoDialog19IGDSPromoDialogView");
+    if (SCIIntroMethodHasSignature(promoDialogClass, NSSelectorFromString(@"title"), @encode(id), @[]) &&
+        SCIIntroMethodHasSignature(promoDialogClass, NSSelectorFromString(@"secondaryActionTapped:"), @encode(void), @[ @"@" ]) &&
+        SCIIntroMethodHasSignature(promoDialogClass, NSSelectorFromString(@"primaryActionTapped:"), @encode(void), @[ @"@" ]) &&
+        SCIIntroMethodHasSignature(promoDialogClass, NSSelectorFromString(@"dismissAlertView:"), @encode(void), @[ @"@" ])) {
+        %init(SCIMapIntroPromoDialog, SCIMapPromoDialogView = promoDialogClass);
+        Class popoverClass = NSClassFromString(@"IGPopoverController");
+        if (SCIIntroMethodHasSignature(popoverClass, NSSelectorFromString(@"present"), @encode(void), @[]) &&
+            SCIIntroMethodHasSignature(popoverClass, NSSelectorFromString(@"navigationController"), @encode(id), @[])) {
+            %init(SCIMapIntroPopover);
+        }
+    }
     Class eligibilityClass = NSClassFromString(@"IGQPEligibilityChecker");
     SEL eligibilitySelector = NSSelectorFromString(@"_promotionIsEligible:triggerID:surfaceID:triggerContext:additionalEligibilityBlock:debugInfo:");
     NSArray *eligibilityArguments = @[ @"@", @"@", @"@", @"@", @"@?", @"^@" ];
