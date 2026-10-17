@@ -4,6 +4,7 @@
 
 static NSString * const kSCIInstagramMapIntroCompletedKey = @"sci_instagram_map_intro_completed";
 static const void *kSCIMapIntroSheetAssociatedKey = &kSCIMapIntroSheetAssociatedKey;
+static BOOL SCIIsMarkingInstagramMapIntroCompleted = NO;
 
 static BOOL SCIViewControllerLooksLikeFeatureIntro(UIViewController *viewController);
 static BOOL SCITextLooksLikeFeatureIntro(NSString *text);
@@ -62,7 +63,10 @@ static IGDirectNUXManager *SCINuxManagerFromResponderChain(UIViewController *vie
 }
 
 static void SCIMarkInstagramMapIntroCompleted(IGDirectNUXManager *nuxManager) {
+    if (SCIIsMarkingInstagramMapIntroCompleted) return;
+
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    BOOL alreadyMarked = [defaults boolForKey:kSCIInstagramMapIntroCompletedKey];
     [defaults setBool:YES forKey:kSCIInstagramMapIntroCompletedKey];
 
     NSArray<NSString *> *keys = @[
@@ -82,16 +86,21 @@ static void SCIMarkInstagramMapIntroCompleted(IGDirectNUXManager *nuxManager) {
         [defaults setBool:YES forKey:key];
         [defaults setInteger:999 forKey:[NSString stringWithFormat:@"%@_impression_count", key]];
     }
+    [defaults synchronize];
+
+    if (alreadyMarked && !nuxManager) return;
 
     IGDirectNUXManager *manager = nuxManager ?: SCINuxManagerFromResponderChain(nil);
+    if (!manager) return;
 
-    if (manager) {
+    SCIIsMarkingInstagramMapIntroCompleted = YES;
+    @try {
         for (NSString *key in keys) {
             [manager markNuxAsCompletedWithKey:key];
         }
+    } @finally {
+        SCIIsMarkingInstagramMapIntroCompleted = NO;
     }
-
-    [defaults synchronize];
 }
 
 static void SCINoteMapIntroSheet(UIViewController *sheet) {
@@ -197,7 +206,6 @@ static BOOL SCITextLooksLikeFeatureIntro(NSString *text) {
         ([lower containsString:@"introducing"] || [lower containsString:@"discover"] || [lower containsString:@"see"])) {
         return YES;
     }
-    if ([lower hasPrefix:@"introducing"]) return YES;
     return NO;
 }
 
@@ -248,40 +256,22 @@ static BOOL SCIIsInstagramMapIntroSheet(UIViewController *sheet) {
     return SCIViewControllerTreeLooksLikeFeatureIntro(sheet, 0);
 }
 
-static void SCIRemovePartialModalDimmingFromSheet(UIViewController *sheet) {
-    if (!sheet) return;
-    for (NSString *key in @[ @"_dimmingView", @"_maskingView" ]) {
-        @try {
-            UIView *view = [sheet valueForKey:key];
-            [view removeFromSuperview];
-        } @catch (__unused NSException *exception) {
-        }
-    }
-}
-
 static void SCIDismissInstagramMapIntroSheet(UIViewController *sheet) {
     if (!sheet) return;
+    if (!SCIIsInstagramMapIntroSheet(sheet) && !SCIMapIntroSheetWasNoted(sheet)) return;
 
-    SCIMarkInstagramMapIntroCompleted(nil);
-    SCIRemovePartialModalDimmingFromSheet(sheet);
-
-    void (^finish)(void) = ^{
-        for (UIWindow *window in [UIApplication sharedApplication].windows) {
-            for (UIView *subview in [window.subviews copy]) {
-                NSString *name = NSStringFromClass([subview class]);
-                if ([name containsString:@"DelegatedHitTest"] && subview.alpha > 0.05 && subview.alpha < 0.95) {
-                    [subview removeFromSuperview];
-                }
-            }
-        }
-    };
+    SCIMarkInstagramMapIntroCompleted(SCINuxManagerFromResponderChain(sheet));
 
     if (sheet.presentingViewController) {
-        [sheet.presentingViewController dismissViewControllerAnimated:NO completion:finish];
+        [sheet.presentingViewController dismissViewControllerAnimated:NO completion:nil];
         return;
     }
 
-    [sheet dismissViewControllerAnimated:NO completion:finish];
+    if (sheet.parentViewController) {
+        [sheet willMoveToParentViewController:nil];
+        [sheet.view removeFromSuperview];
+        [sheet removeFromParentViewController];
+    }
 }
 
 static BOOL SCIInboxHostedPartialSheet(UIViewController *sheet) {
@@ -300,36 +290,10 @@ static BOOL SCIShouldDismissRepeatMapIntroSheet(UIViewController *sheet) {
     return SCIIsInstagramMapIntroSheet(sheet) || SCIMapIntroSheetWasNoted(sheet);
 }
 
-static void SCIHandleInstagramMapIntroSheetIfNeeded(UIViewController *sheet) {
-    if (!sheet) return;
-
-    if (SCIShouldDismissRepeatMapIntroSheet(sheet)) {
-        SCIDismissInstagramMapIntroSheet(sheet);
-        return;
-    }
-
-    if (!SCIShouldSkipInstagramMapIntro()) return;
-    if (!SCIIsInstagramMapIntroSheet(sheet)) return;
-    SCIDismissInstagramMapIntroSheet(sheet);
-}
-
 static void SCIMarkMapIntroCompletedIfNotedSheet(UIViewController *sheet) {
     if (!sheet) return;
     if (SCIMapIntroSheetWasNoted(sheet) || SCIIsInstagramMapIntroSheet(sheet)) {
         SCIMarkInstagramMapIntroCompleted(SCINuxManagerFromResponderChain(sheet));
-    }
-}
-
-static void SCICleanupStaleMapIntroDimmingIfCompleted(void) {
-    if (!SCIInstagramMapIntroMarkedCompleted()) return;
-
-    for (UIWindow *window in [UIApplication sharedApplication].windows) {
-        for (UIView *subview in [window.subviews copy]) {
-            NSString *name = NSStringFromClass([subview class]);
-            if ([name containsString:@"DelegatedHitTest"] && subview.alpha > 0.05 && subview.alpha < 0.95) {
-                [subview removeFromSuperview];
-            }
-        }
     }
 }
 
@@ -405,8 +369,10 @@ static void SCICleanupStaleMapIntroDimmingIfCompleted(void) {
 
 - (void)markNuxAsCompletedWithKey:(id)key {
     %orig;
+    if (SCIIsMarkingInstagramMapIntroCompleted) return;
     if (SCIKeyLooksLikeMapIntroNUX(key)) {
-        SCIMarkInstagramMapIntroCompleted(self);
+        [[NSUserDefaults standardUserDefaults] setBool:YES forKey:kSCIInstagramMapIntroCompletedKey];
+        [[NSUserDefaults standardUserDefaults] synchronize];
     }
 }
 
@@ -416,50 +382,42 @@ static void SCICleanupStaleMapIntroDimmingIfCompleted(void) {
 
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
-    if (SCIInstagramMapIntroMarkedCompleted() || SCIShouldSuppressFeatureIntros()) {
+    if (SCIShouldSuppressFeatureIntros() && !SCIInstagramMapIntroMarkedCompleted()) {
         SCIMarkInstagramMapIntroCompleted(SCINuxManagerFromResponderChain(self));
     }
-    SCICleanupStaleMapIntroDimmingIfCompleted();
 }
 
 %end
 
 %hook IGPartialModalSheetViewController
 
-- (void)viewWillAppear:(BOOL)animated {
-    if (SCIShouldDismissRepeatMapIntroSheet(self)) {
-        SCIDismissInstagramMapIntroSheet(self);
-        return;
-    }
-    %orig;
-}
-
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
 
     SCIScanPartialModalForMapIntroAndNote(self);
-    SCIHandleInstagramMapIntroSheetIfNeeded(self);
+
+    if (SCIShouldDismissRepeatMapIntroSheet(self) ||
+        (SCIShouldSkipInstagramMapIntro() && SCIIsInstagramMapIntroSheet(self))) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            SCIDismissInstagramMapIntroSheet(self);
+        });
+        return;
+    }
 
     __weak IGPartialModalSheetViewController *weakSelf = self;
-    for (NSNumber *delayNumber in @[ @0.35, @1.0, @2.0 ]) {
-        NSTimeInterval delay = delayNumber.doubleValue;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            SCIScanPartialModalForMapIntroAndNote(weakSelf);
-            SCIHandleInstagramMapIntroSheetIfNeeded(weakSelf);
-        });
-    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        SCIScanPartialModalForMapIntroAndNote(weakSelf);
+        if (!weakSelf) return;
+        if (SCIShouldDismissRepeatMapIntroSheet(weakSelf) ||
+            (SCIShouldSkipInstagramMapIntro() && SCIIsInstagramMapIntroSheet(weakSelf))) {
+            SCIDismissInstagramMapIntroSheet(weakSelf);
+        }
+    });
 }
 
 - (void)viewDidDisappear:(BOOL)animated {
     SCIMarkMapIntroCompletedIfNotedSheet(self);
     %orig;
-}
-
-- (void)_setTargetStateWithDefaultAnimation:(unsigned long long)state {
-    %orig;
-    if (state == 0) {
-        SCIMarkMapIntroCompletedIfNotedSheet(self);
-    }
 }
 
 %end
@@ -468,7 +426,12 @@ static void SCICleanupStaleMapIntroDimmingIfCompleted(void) {
 
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
-    SCIHandleInstagramMapIntroSheetIfNeeded(self);
+    if (SCIShouldDismissRepeatMapIntroSheet(self) ||
+        (SCIShouldSkipInstagramMapIntro() && SCIIsInstagramMapIntroSheet(self))) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            SCIDismissInstagramMapIntroSheet(self);
+        });
+    }
 }
 
 - (void)viewDidDisappear:(BOOL)animated {
