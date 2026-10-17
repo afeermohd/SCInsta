@@ -1,12 +1,48 @@
 #import "../../Utils.h"
 #import "../../InstagramHeaders.h"
 
+static NSString * const kSCIInstagramMapIntroCompletedKey = @"sci_instagram_map_intro_completed";
+
+static BOOL SCIViewControllerLooksLikeFeatureIntro(UIViewController *viewController);
+static BOOL SCITextLooksLikeFeatureIntro(NSString *text);
+
 static BOOL SCIShouldSuppressFeatureIntros(void) {
     return [SCIUtils getBoolPref:@"suppress_feature_intros"];
 }
 
-static BOOL SCIViewControllerLooksLikeFeatureIntro(UIViewController *viewController);
-static BOOL SCITextLooksLikeFeatureIntro(NSString *text);
+static BOOL SCIInstagramMapIntroMarkedCompleted(void) {
+    return [[NSUserDefaults standardUserDefaults] boolForKey:kSCIInstagramMapIntroCompletedKey];
+}
+
+static void SCIMarkInstagramMapIntroCompleted(IGDirectNUXManager *nuxManager) {
+    [[NSUserDefaults standardUserDefaults] setBool:YES forKey:kSCIInstagramMapIntroCompletedKey];
+
+    NSArray<NSString *> *keys = @[
+        @"friends_map",
+        @"instagram_map",
+        @"direct_friends_map",
+        @"direct_map_nux",
+        @"map_nux",
+    ];
+
+    if (nuxManager) {
+        for (NSString *key in keys) {
+            [nuxManager markNuxAsCompletedWithKey:key];
+        }
+    }
+}
+
+/// Skip map intro when user opted out, already dismissed once, or toggle is on (never show).
+static BOOL SCIShouldSkipInstagramMapIntro(void) {
+    return SCIShouldSuppressFeatureIntros() || SCIInstagramMapIntroMarkedCompleted();
+}
+
+static BOOL SCIKeyLooksLikeMapIntroNUX(id key) {
+    if (![key isKindOfClass:[NSString class]]) return NO;
+    NSString *lower = [(NSString *)key lowercaseString];
+    return [lower containsString:@"friends_map"] || [lower containsString:@"instagram_map"] ||
+           ([lower containsString:@"map"] && [lower containsString:@"nux"]);
+}
 
 static NSString *SCICollectVisibleTextInView(UIView *view, NSUInteger depth) {
     if (!view || depth > 25) return @"";
@@ -73,118 +109,6 @@ static UIViewController *SCIRepresentativeContentViewController(UIViewController
     return viewController;
 }
 
-static BOOL SCIViewControllerTreeLooksLikeFeatureIntro(UIViewController *viewController, NSUInteger depth) {
-    if (!viewController || depth > 6) return NO;
-
-    NSString *className = NSStringFromClass([viewController class]);
-    if (SCIClassNameSignalsFeatureIntro(className)) return YES;
-
-    if (SCIViewControllerLooksLikeFeatureIntro(viewController)) return YES;
-
-    UIViewController *content = SCIRepresentativeContentViewController(viewController);
-    if (content != viewController && SCIViewControllerTreeLooksLikeFeatureIntro(content, depth + 1)) {
-        return YES;
-    }
-
-    for (UIViewController *child in viewController.childViewControllers) {
-        if (SCIViewControllerTreeLooksLikeFeatureIntro(child, depth + 1)) {
-            return YES;
-        }
-    }
-
-    if (viewController.presentedViewController &&
-        SCIViewControllerTreeLooksLikeFeatureIntro(viewController.presentedViewController, depth + 1)) {
-        return YES;
-    }
-
-    return NO;
-}
-
-static BOOL SCIIsPartialModalSheetViewController(UIViewController *viewController) {
-    if (!viewController) return NO;
-    NSString *name = NSStringFromClass([viewController class]);
-    return [name containsString:@"IGPartialModalSheetViewController"];
-}
-
-static void SCIRemoveViewFromHierarchy(UIView *view) {
-    if (!view || !view.superview) return;
-    [view removeFromSuperview];
-}
-
-static void SCIRemovePartialModalChromeFromSheet(UIViewController *sheet) {
-    if (!sheet) return;
-
-    for (NSString *key in @[ @"_dimmingView", @"_maskingView", @"_blurBackgroundView", @"_backgroundView", @"_containerView" ]) {
-        @try {
-            SCIRemoveViewFromHierarchy([sheet valueForKey:key]);
-        } @catch (__unused NSException *exception) {
-        }
-    }
-
-    SCIRemoveViewFromHierarchy(sheet.view);
-}
-
-static BOOL SCIViewLooksLikePartialModalDimmingOverlay(UIView *view) {
-    if (!view || view.hidden || view.alpha < 0.05) return NO;
-
-    NSString *name = NSStringFromClass([view class]);
-    if (![name containsString:@"DelegatedHitTest"] && ![name containsString:@"Dimming"]) {
-        return NO;
-    }
-
-    if (view.alpha > 0.95) return NO;
-
-    UIWindow *window = view.window;
-    if (!window) return NO;
-
-    CGRect frameInWindow = [view convertRect:view.bounds toView:window];
-    CGFloat viewArea = CGRectGetWidth(frameInWindow) * CGRectGetHeight(frameInWindow);
-    CGFloat windowArea = CGRectGetWidth(window.bounds) * CGRectGetHeight(window.bounds);
-    if (windowArea <= 0 || viewArea < windowArea * 0.75) return NO;
-
-    return SCITextLooksLikeFeatureIntro(SCICollectVisibleTextInView(view, 0)) == NO;
-}
-
-static void SCICleanupOrphanPartialModalDimmingOverlays(void) {
-    if (!SCIShouldSuppressFeatureIntros()) return;
-
-    for (UIWindow *window in [UIApplication sharedApplication].windows) {
-        for (UIView *subview in [window.subviews copy]) {
-            if (SCIViewLooksLikePartialModalDimmingOverlay(subview)) {
-                [subview removeFromSuperview];
-                NSLog(@"[SCInsta] Removed orphan partial-modal dimming overlay");
-            }
-        }
-    }
-}
-
-static void SCITeardownIntroViewController(UIViewController *viewController) {
-    if (!viewController) return;
-
-    if (SCIIsPartialModalSheetViewController(viewController)) {
-        SCIRemovePartialModalChromeFromSheet(viewController);
-    }
-
-    if (viewController.presentingViewController) {
-        [viewController.presentingViewController dismissViewControllerAnimated:NO completion:nil];
-        SCICleanupOrphanPartialModalDimmingOverlays();
-        return;
-    }
-
-    if (viewController.parentViewController) {
-        [viewController willMoveToParentViewController:nil];
-        [viewController.view removeFromSuperview];
-        [viewController removeFromParentViewController];
-        SCICleanupOrphanPartialModalDimmingOverlays();
-    }
-}
-
-static void SCIHandleBlockedIntroPresentation(void) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        SCICleanupOrphanPartialModalDimmingOverlays();
-    });
-}
-
 static BOOL SCITextLooksLikeFeatureIntro(NSString *text) {
     if (!text.length) return NO;
     NSString *lower = text.lowercaseString;
@@ -196,16 +120,6 @@ static BOOL SCITextLooksLikeFeatureIntro(NSString *text) {
     }
     if ([lower hasPrefix:@"introducing"]) return YES;
     return NO;
-}
-
-static void SCIStripIntroOverlayIfPresentInView(UIView *view) {
-    if (!view || !SCIShouldSuppressFeatureIntros()) return;
-
-    NSString *text = SCICollectVisibleTextInView(view, 0);
-    if (!SCITextLooksLikeFeatureIntro(text)) return;
-
-    [view removeFromSuperview];
-    NSLog(@"[SCInsta] Removed feature intro overlay from hierarchy");
 }
 
 static BOOL SCIViewControllerLooksLikeFeatureIntro(UIViewController *viewController) {
@@ -228,34 +142,86 @@ static BOOL SCIViewControllerLooksLikeFeatureIntro(UIViewController *viewControl
     return NO;
 }
 
-static BOOL SCIIsBlockedIntroPresentationClass(UIViewController *viewController) {
-    NSString *name = NSStringFromClass([viewController class]);
+static BOOL SCIViewControllerTreeLooksLikeFeatureIntro(UIViewController *viewController, NSUInteger depth) {
+    if (!viewController || depth > 6) return NO;
 
-    if ([name containsString:@"Bloks"] && ([name containsString:@"Modal"] || [name containsString:@"Sheet"])) return YES;
-    if ([name containsString:@"BottomSheet"] && [name containsString:@"Bloks"]) return YES;
-    if (SCIClassNameSignalsFeatureIntro(name)) return YES;
+    NSString *className = NSStringFromClass([viewController class]);
+    if (SCIClassNameSignalsFeatureIntro(className)) return YES;
+
+    if (SCIViewControllerLooksLikeFeatureIntro(viewController)) return YES;
+
+    UIViewController *content = SCIRepresentativeContentViewController(viewController);
+    if (content != viewController && SCIViewControllerTreeLooksLikeFeatureIntro(content, depth + 1)) {
+        return YES;
+    }
+
+    for (UIViewController *child in viewController.childViewControllers) {
+        if (SCIViewControllerTreeLooksLikeFeatureIntro(child, depth + 1)) {
+            return YES;
+        }
+    }
 
     return NO;
 }
 
-static BOOL SCIShouldBlockPresentationOfViewController(UIViewController *viewController) {
-    if (!SCIShouldSuppressFeatureIntros() || !viewController) return NO;
-
-    if (SCIViewControllerTreeLooksLikeFeatureIntro(viewController, 0)) return YES;
-    if (SCIIsBlockedIntroPresentationClass(viewController)) return YES;
-
-    return NO;
+static BOOL SCIIsInstagramMapIntroSheet(UIViewController *sheet) {
+    if (!sheet) return NO;
+    return SCIViewControllerTreeLooksLikeFeatureIntro(sheet, 0);
 }
 
-static BOOL SCIInboxShouldBlockPartialModalPresentation(UIViewController *viewController) {
-    if (!SCIShouldSuppressFeatureIntros() || !viewController) return NO;
-    if (SCIShouldBlockPresentationOfViewController(viewController)) return YES;
+static void SCIRemovePartialModalDimmingFromSheet(UIViewController *sheet) {
+    if (!sheet) return;
+    for (NSString *key in @[ @"_dimmingView", @"_maskingView" ]) {
+        @try {
+            UIView *view = [sheet valueForKey:key];
+            [view removeFromSuperview];
+        } @catch (__unused NSException *exception) {
+        }
+    }
+}
 
-    NSString *name = NSStringFromClass([viewController class]);
-    if ([name containsString:@"IGPartialModalSheetViewController"]) return YES;
-    if ([name containsString:@"IGPartialModalSheetNavigationController"]) return YES;
+static void SCIDismissInstagramMapIntroSheet(UIViewController *sheet) {
+    if (!sheet) return;
 
-    return NO;
+    SCIMarkInstagramMapIntroCompleted(nil);
+    SCIRemovePartialModalDimmingFromSheet(sheet);
+
+    void (^finish)(void) = ^{
+        for (UIWindow *window in [UIApplication sharedApplication].windows) {
+            for (UIView *subview in [window.subviews copy]) {
+                NSString *name = NSStringFromClass([subview class]);
+                if ([name containsString:@"DelegatedHitTest"] && subview.alpha > 0.05 && subview.alpha < 0.95) {
+                    [subview removeFromSuperview];
+                }
+            }
+        }
+    };
+
+    if (sheet.presentingViewController) {
+        [sheet.presentingViewController dismissViewControllerAnimated:NO completion:finish];
+        return;
+    }
+
+    [sheet dismissViewControllerAnimated:NO completion:finish];
+}
+
+static void SCIHandleInstagramMapIntroSheetIfNeeded(UIViewController *sheet) {
+    if (!sheet || !SCIShouldSkipInstagramMapIntro()) return;
+    if (!SCIIsInstagramMapIntroSheet(sheet)) return;
+    SCIDismissInstagramMapIntroSheet(sheet);
+}
+
+static void SCICleanupStaleMapIntroDimmingIfCompleted(void) {
+    if (!SCIInstagramMapIntroMarkedCompleted()) return;
+
+    for (UIWindow *window in [UIApplication sharedApplication].windows) {
+        for (UIView *subview in [window.subviews copy]) {
+            NSString *name = NSStringFromClass([subview class]);
+            if ([name containsString:@"DelegatedHitTest"] && subview.alpha > 0.05 && subview.alpha < 0.95) {
+                [subview removeFromSuperview];
+            }
+        }
+    }
 }
 
 %hook IGDirectNUXManager
@@ -265,9 +231,9 @@ static BOOL SCIInboxShouldBlockPartialModalPresentation(UIViewController *viewCo
             alreadyPresentedHandler:(id)alreadyPresented
              confirmActionHandler:(id)confirm
               cancelActionHandler:(id)cancel {
-    if (SCIShouldSuppressFeatureIntros()) {
+    if (SCIShouldSkipInstagramMapIntro()) {
         [self markTooltipOfTypeAsCompleted:type];
-        [self markNuxAsCompletedWithKey:@"friends_map"];
+        SCIMarkInstagramMapIntroCompleted(self);
         return;
     }
     %orig;
@@ -317,41 +283,15 @@ static BOOL SCIInboxShouldBlockPartialModalPresentation(UIViewController *viewCo
 }
 
 - (_Bool)nuxWithKeyIsCompleted:(id)key {
+    if (SCIInstagramMapIntroMarkedCompleted() && SCIKeyLooksLikeMapIntroNUX(key)) return YES;
     if (SCIShouldSuppressFeatureIntros()) return YES;
     return %orig;
 }
 
 - (_Bool)canShowNUXBasedOnLastTimestampForKey:(id)key {
+    if (SCIShouldSkipInstagramMapIntro() && SCIKeyLooksLikeMapIntroNUX(key)) return NO;
     if (SCIShouldSuppressFeatureIntros()) return NO;
     return %orig;
-}
-
-%end
-
-%hook IGViewController
-
-- (void)_superPresentViewController:(UIViewController *)viewControllerToPresent animated:(BOOL)flag completion:(id)completion {
-    if (SCIShouldBlockPresentationOfViewController(viewControllerToPresent)) {
-        NSLog(@"[SCInsta] Blocked feature intro (_superPresent): %@", NSStringFromClass([viewControllerToPresent class]));
-        if (completion) ((void (^)(void))completion)();
-        SCIHandleBlockedIntroPresentation();
-        return;
-    }
-    %orig;
-}
-
-%end
-
-%hook IGMainFeedAppHeaderController
-
-- (void)_superPresentViewController:(UIViewController *)viewControllerToPresent animated:(BOOL)flag completion:(id)completion {
-    if (SCIShouldBlockPresentationOfViewController(viewControllerToPresent)) {
-        NSLog(@"[SCInsta] Blocked feature intro (feed header _superPresent): %@", NSStringFromClass([viewControllerToPresent class]));
-        if (completion) ((void (^)(void))completion)();
-        SCIHandleBlockedIntroPresentation();
-        return;
-    }
-    %orig;
 }
 
 %end
@@ -361,106 +301,31 @@ static BOOL SCIInboxShouldBlockPartialModalPresentation(UIViewController *viewCo
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
     if (SCIShouldSuppressFeatureIntros()) {
-        SCICleanupOrphanPartialModalDimmingOverlays();
+        SCIMarkInstagramMapIntroCompleted(nil);
     }
-}
-
-- (void)presentViewController:(UIViewController *)viewControllerToPresent
-                     animated:(BOOL)flag
-                   completion:(void (^)(void))completion {
-    if (SCIInboxShouldBlockPartialModalPresentation(viewControllerToPresent)) {
-        NSLog(@"[SCInsta] Blocked inbox intro (present): %@", NSStringFromClass([viewControllerToPresent class]));
-        if (completion) completion();
-        SCIHandleBlockedIntroPresentation();
-        return;
-    }
-    %orig;
-}
-
-- (void)_superPresentViewController:(UIViewController *)viewControllerToPresent animated:(BOOL)flag completion:(id)completion {
-    if (SCIInboxShouldBlockPartialModalPresentation(viewControllerToPresent)) {
-        NSLog(@"[SCInsta] Blocked inbox intro (_superPresent): %@", NSStringFromClass([viewControllerToPresent class]));
-        if (completion) ((void (^)(void))completion)();
-        SCIHandleBlockedIntroPresentation();
-        return;
-    }
-    %orig;
+    SCICleanupStaleMapIntroDimmingIfCompleted();
 }
 
 %end
-
-%hook UIViewController
-
-- (void)presentViewController:(UIViewController *)viewControllerToPresent
-                     animated:(BOOL)flag
-                   completion:(void (^)(void))completion {
-    if (SCIShouldBlockPresentationOfViewController(viewControllerToPresent)) {
-        NSLog(@"[SCInsta] Blocked feature intro (present): %@", NSStringFromClass([viewControllerToPresent class]));
-        if (completion) completion();
-        SCIHandleBlockedIntroPresentation();
-        return;
-    }
-    %orig;
-}
-
-- (void)addChildViewController:(UIViewController *)childController {
-    if (SCIShouldBlockPresentationOfViewController(childController)) {
-        NSLog(@"[SCInsta] Blocked feature intro (addChild): %@", NSStringFromClass([childController class]));
-        SCIHandleBlockedIntroPresentation();
-        return;
-    }
-    %orig;
-}
-
-- (void)viewWillAppear:(BOOL)animated {
-    if (SCIShouldSuppressFeatureIntros() && SCIViewControllerTreeLooksLikeFeatureIntro(self, 0)) {
-        SCITeardownIntroViewController(self);
-        return;
-    }
-    %orig;
-}
-
-%end
-
-static BOOL SCIPartialModalSheetShouldBeSuppressed(UIViewController *sheet) {
-    if (!SCIShouldSuppressFeatureIntros() || !sheet) return NO;
-    if (SCIViewControllerTreeLooksLikeFeatureIntro(sheet, 0)) return YES;
-
-    UIViewController *content = SCIRepresentativeContentViewController(sheet);
-    if (content != sheet && SCIViewControllerTreeLooksLikeFeatureIntro(content, 0)) return YES;
-
-    return NO;
-}
 
 %hook IGPartialModalSheetViewController
 
-- (void)viewDidLoad {
-    %orig;
-    if (SCIPartialModalSheetShouldBeSuppressed(self)) {
-        SCITeardownIntroViewController(self);
-    }
-}
-
-- (void)viewWillAppear:(BOOL)animated {
-    if (SCIPartialModalSheetShouldBeSuppressed(self)) {
-        SCITeardownIntroViewController(self);
-        return;
-    }
-    %orig;
-}
-
 - (void)viewDidAppear:(BOOL)animated {
-    if (SCIPartialModalSheetShouldBeSuppressed(self)) {
-        SCITeardownIntroViewController(self);
-        return;
-    }
     %orig;
+    SCIHandleInstagramMapIntroSheetIfNeeded(self);
+
+    if (!SCIShouldSkipInstagramMapIntro()) return;
+
+    __weak IGPartialModalSheetViewController *weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        SCIHandleInstagramMapIntroSheetIfNeeded(weakSelf);
+    });
 }
 
 - (void)viewDidDisappear:(BOOL)animated {
     %orig;
-    if (SCIShouldSuppressFeatureIntros()) {
-        SCICleanupOrphanPartialModalDimmingOverlays();
+    if (SCIIsInstagramMapIntroSheet(self)) {
+        SCIMarkInstagramMapIntroCompleted(nil);
     }
 }
 
@@ -468,28 +333,15 @@ static BOOL SCIPartialModalSheetShouldBeSuppressed(UIViewController *sheet) {
 
 %hook IGPartialModalSheetNavigationController
 
-- (void)viewWillAppear:(BOOL)animated {
-    if (SCIPartialModalSheetShouldBeSuppressed(self)) {
-        SCITeardownIntroViewController(self);
-        return;
-    }
+- (void)viewDidAppear:(BOOL)animated {
     %orig;
+    SCIHandleInstagramMapIntroSheetIfNeeded(self);
 }
 
-%end
-
-%hook UIWindow
-
-- (void)addSubview:(UIView *)view {
+- (void)viewDidDisappear:(BOOL)animated {
     %orig;
-    if (!SCIShouldSuppressFeatureIntros() || !view) return;
-
-    SCIStripIntroOverlayIfPresentInView(view);
-
-    if (SCIViewLooksLikePartialModalDimmingOverlay(view)) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            SCICleanupOrphanPartialModalDimmingOverlays();
-        });
+    if (SCIIsInstagramMapIntroSheet(self)) {
+        SCIMarkInstagramMapIntroCompleted(nil);
     }
 }
 
@@ -498,7 +350,7 @@ static BOOL SCIPartialModalSheetShouldBeSuppressed(UIViewController *sheet) {
 %hook IGDirectNotesTrayRowCell
 - (id)listAdapterObjects {
     NSArray *originalObjs = %orig();
-    if (!SCIShouldSuppressFeatureIntros()) return originalObjs;
+    if (!SCIShouldSkipInstagramMapIntro()) return originalObjs;
 
     NSMutableArray *filteredObjs = [NSMutableArray arrayWithCapacity:[originalObjs count]];
 
