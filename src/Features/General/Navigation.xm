@@ -93,6 +93,12 @@ static BOOL SCIBlockTabBarAction(NSString *featureKey) {
 %new
 - (void)sci_featureScheduleAvailabilityChanged:(NSNotification *)notification {
     [self _layoutTabBar];
+    SCIApplyScheduleToTabBarButtons(self);
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    SCIApplyScheduleToTabBarButtons(self);
 }
 
 - (void)_layoutTabBar {

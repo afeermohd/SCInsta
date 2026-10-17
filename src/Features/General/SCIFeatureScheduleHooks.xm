@@ -3,29 +3,11 @@
 
 static void SCIScheduleBlockedHandler(NSString *featureKey) {
     [SCIFeatureSchedule endUseForKey:featureKey];
+    [SCIUtils showToastForDuration:3.0
+                             title:[NSString stringWithFormat:@"%@ unavailable", [featureKey capitalizedString]]
+                          subtitle:[SCIFeatureSchedule unavailableReasonForKey:featureKey]];
+    [SCIFeatureSchedule enforceLeavingFeatureIfActive:featureKey];
     [SCIFeatureSchedule notifyAvailabilityChanged];
-    [SCIUtils showToastForDuration:3.0
-                             title:[NSString stringWithFormat:@"%@ unavailable", [featureKey capitalizedString]]
-                          subtitle:[SCIFeatureSchedule unavailableReasonForKey:featureKey]];
-}
-
-static void SCIDismissViewControllerIfBlocked(id viewController, NSString *featureKey) {
-    if (![SCIFeatureSchedule isScheduleEnabledForKey:featureKey]) return;
-    if ([SCIFeatureSchedule isAvailableForKey:featureKey]) return;
-
-    UIViewController *vc = (UIViewController *)viewController;
-
-    [SCIUtils showToastForDuration:3.0
-                             title:[NSString stringWithFormat:@"%@ unavailable", [featureKey capitalizedString]]
-                          subtitle:[SCIFeatureSchedule unavailableReasonForKey:featureKey]];
-
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (vc.presentingViewController) {
-            [vc dismissViewControllerAnimated:YES completion:nil];
-        } else if (vc.navigationController && vc.navigationController.viewControllers.count > 1) {
-            [vc.navigationController popViewControllerAnimated:YES];
-        }
-    });
 }
 
 static void SCIBeginScheduleTracking(NSString *featureKey) {
@@ -40,7 +22,7 @@ static void SCIBeginScheduleTracking(NSString *featureKey) {
 
 static BOOL SCIViewWillAppearBlocked(id self, NSString *featureKey) {
     if (![SCIFeatureSchedule isFeatureNavigationAllowed:featureKey]) {
-        SCIDismissViewControllerIfBlocked(self, featureKey);
+        SCIScheduleBlockedHandler(featureKey);
         return YES;
     }
     return NO;

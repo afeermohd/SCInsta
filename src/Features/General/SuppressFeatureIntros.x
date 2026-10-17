@@ -5,10 +5,16 @@ static BOOL SCIShouldSuppressFeatureIntros(void) {
     return [SCIUtils getBoolPref:@"suppress_feature_intros"];
 }
 
+static BOOL SCIViewControllerLooksLikeFeatureIntro(UIViewController *viewController);
+
 static NSString *SCICollectVisibleTextInView(UIView *view, NSUInteger depth) {
     if (!view || depth > 25) return @"";
 
     NSMutableArray<NSString *> *parts = [NSMutableArray array];
+
+    if (view.accessibilityLabel.length) [parts addObject:view.accessibilityLabel];
+    if (view.accessibilityHint.length) [parts addObject:view.accessibilityHint];
+    if (view.accessibilityValue.length) [parts addObject:view.accessibilityValue];
 
     if ([view isKindOfClass:[UILabel class]]) {
         UILabel *label = (UILabel *)view;
@@ -30,13 +36,105 @@ static NSString *SCICollectVisibleTextInView(UIView *view, NSUInteger depth) {
     return [parts componentsJoinedByString:@" "];
 }
 
+static BOOL SCIClassNameSignalsFeatureIntro(NSString *name) {
+    if (!name.length) return NO;
+    NSString *lower = name.lowercaseString;
+    if ([lower containsString:@"friendsmap"] || [lower containsString:@"friends_map"]) return YES;
+    if ([lower containsString:@"instagrammap"]) return YES;
+    if ([lower containsString:@"mapnux"] || [lower containsString:@"map_nux"]) return YES;
+    if ([lower containsString:@"featureintro"] || [lower containsString:@"feature_intro"]) return YES;
+    if ([lower containsString:@"quickpromotion"]) return YES;
+    if ([lower containsString:@"introducing"] && [lower containsString:@"map"]) return YES;
+    return NO;
+}
+
+static UIViewController *SCIRepresentativeContentViewController(UIViewController *viewController) {
+    if (!viewController) return nil;
+
+    if ([viewController isKindOfClass:[UINavigationController class]]) {
+        return [(UINavigationController *)viewController visibleViewController] ?: viewController;
+    }
+
+    for (NSString *key in @[ @"contentViewController", @"viewController", @"rootViewController", @"childViewController" ]) {
+        @try {
+            id value = [viewController valueForKey:key];
+            if ([value isKindOfClass:[UIViewController class]]) {
+                return (UIViewController *)value;
+            }
+        } @catch (__unused NSException *exception) {
+        }
+    }
+
+    if (viewController.childViewControllers.count == 1) {
+        return viewController.childViewControllers.firstObject;
+    }
+
+    return viewController;
+}
+
+static BOOL SCIViewControllerTreeLooksLikeFeatureIntro(UIViewController *viewController, NSUInteger depth) {
+    if (!viewController || depth > 6) return NO;
+
+    NSString *className = NSStringFromClass([viewController class]);
+    if (SCIClassNameSignalsFeatureIntro(className)) return YES;
+
+    if (SCIViewControllerLooksLikeFeatureIntro(viewController)) return YES;
+
+    UIViewController *content = SCIRepresentativeContentViewController(viewController);
+    if (content != viewController && SCIViewControllerTreeLooksLikeFeatureIntro(content, depth + 1)) {
+        return YES;
+    }
+
+    for (UIViewController *child in viewController.childViewControllers) {
+        if (SCIViewControllerTreeLooksLikeFeatureIntro(child, depth + 1)) {
+            return YES;
+        }
+    }
+
+    if (viewController.presentedViewController &&
+        SCIViewControllerTreeLooksLikeFeatureIntro(viewController.presentedViewController, depth + 1)) {
+        return YES;
+    }
+
+    return NO;
+}
+
+static void SCITeardownIntroViewController(UIViewController *viewController) {
+    if (!viewController) return;
+
+    if (viewController.presentingViewController) {
+        [viewController.presentingViewController dismissViewControllerAnimated:NO completion:nil];
+        return;
+    }
+
+    if (viewController.parentViewController) {
+        [viewController willMoveToParentViewController:nil];
+        [viewController.view removeFromSuperview];
+        [viewController removeFromParentViewController];
+    }
+}
+
 static BOOL SCITextLooksLikeFeatureIntro(NSString *text) {
     if (!text.length) return NO;
     NSString *lower = text.lowercaseString;
     if ([lower containsString:@"introducing instagram map"]) return YES;
     if ([lower containsString:@"introducing"] && [lower containsString:@"map"]) return YES;
+    if ([lower containsString:@"instagram map"] &&
+        ([lower containsString:@"introducing"] || [lower containsString:@"discover"] || [lower containsString:@"see"])) {
+        return YES;
+    }
     if ([lower hasPrefix:@"introducing"]) return YES;
     return NO;
+}
+
+static void SCIStripIntroOverlayIfPresentInView(UIView *view) {
+    if (!view || !SCIShouldSuppressFeatureIntros()) return;
+
+    NSString *text = SCICollectVisibleTextInView(view, 0);
+    if (!SCITextLooksLikeFeatureIntro(text)) return;
+
+    [view removeFromSuperview];
+    NSLog(@"[SCInsta] Removed feature intro overlay from hierarchy");
 }
 
 static BOOL SCIViewControllerLooksLikeFeatureIntro(UIViewController *viewController) {
@@ -63,20 +161,21 @@ static BOOL SCIIsBlockedIntroPresentationClass(UIViewController *viewController)
     NSString *name = NSStringFromClass([viewController class]);
 
     if ([name containsString:@"IGPartialModalSheetViewController"]) return YES;
+    if ([name containsString:@"IGPartialModalSheetNavigationController"]) return YES;
     if ([name containsString:@"Bloks"] && ([name containsString:@"Modal"] || [name containsString:@"Sheet"])) return YES;
+    if ([name containsString:@"BottomSheet"] && [name containsString:@"Bloks"]) return YES;
+    if (SCIClassNameSignalsFeatureIntro(name)) return YES;
 
     return NO;
 }
 
 static BOOL SCIShouldBlockPresentationOfViewController(UIViewController *viewController) {
     if (!SCIShouldSuppressFeatureIntros() || !viewController) return NO;
-    return SCIViewControllerLooksLikeFeatureIntro(viewController);
-}
 
-static BOOL SCIInboxShouldBlockPresentation(UIViewController *viewControllerToPresent) {
-    if (!SCIShouldSuppressFeatureIntros()) return NO;
-    if (SCIShouldBlockPresentationOfViewController(viewControllerToPresent)) return YES;
-    return SCIIsBlockedIntroPresentationClass(viewControllerToPresent);
+    if (SCIViewControllerTreeLooksLikeFeatureIntro(viewController, 0)) return YES;
+    if (SCIIsBlockedIntroPresentationClass(viewController)) return YES;
+
+    return NO;
 }
 
 %hook IGDirectNUXManager
@@ -88,6 +187,7 @@ static BOOL SCIInboxShouldBlockPresentation(UIViewController *viewControllerToPr
               cancelActionHandler:(id)cancel {
     if (SCIShouldSuppressFeatureIntros()) {
         [self markTooltipOfTypeAsCompleted:type];
+        [self markNuxAsCompletedWithKey:@"friends_map"];
         return;
     }
     %orig;
@@ -161,12 +261,25 @@ static BOOL SCIInboxShouldBlockPresentation(UIViewController *viewControllerToPr
 
 %end
 
+%hook IGMainFeedAppHeaderController
+
+- (void)_superPresentViewController:(UIViewController *)viewControllerToPresent animated:(BOOL)flag completion:(id)completion {
+    if (SCIShouldBlockPresentationOfViewController(viewControllerToPresent)) {
+        NSLog(@"[SCInsta] Blocked feature intro (feed header _superPresent): %@", NSStringFromClass([viewControllerToPresent class]));
+        if (completion) ((void (^)(void))completion)();
+        return;
+    }
+    %orig;
+}
+
+%end
+
 %hook IGDirectInboxViewController
 
 - (void)presentViewController:(UIViewController *)viewControllerToPresent
                      animated:(BOOL)flag
                    completion:(void (^)(void))completion {
-    if (SCIInboxShouldBlockPresentation(viewControllerToPresent)) {
+    if (SCIShouldBlockPresentationOfViewController(viewControllerToPresent)) {
         NSLog(@"[SCInsta] Blocked inbox intro (present): %@", NSStringFromClass([viewControllerToPresent class]));
         if (completion) completion();
         return;
@@ -175,7 +288,7 @@ static BOOL SCIInboxShouldBlockPresentation(UIViewController *viewControllerToPr
 }
 
 - (void)_superPresentViewController:(UIViewController *)viewControllerToPresent animated:(BOOL)flag completion:(id)completion {
-    if (SCIInboxShouldBlockPresentation(viewControllerToPresent)) {
+    if (SCIShouldBlockPresentationOfViewController(viewControllerToPresent)) {
         NSLog(@"[SCInsta] Blocked inbox intro (_superPresent): %@", NSStringFromClass([viewControllerToPresent class]));
         if (completion) ((void (^)(void))completion)();
         return;
@@ -196,6 +309,80 @@ static BOOL SCIInboxShouldBlockPresentation(UIViewController *viewControllerToPr
         return;
     }
     %orig;
+}
+
+- (void)addChildViewController:(UIViewController *)childController {
+    if (SCIShouldBlockPresentationOfViewController(childController)) {
+        NSLog(@"[SCInsta] Blocked feature intro (addChild): %@", NSStringFromClass([childController class]));
+        return;
+    }
+    %orig;
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    if (SCIShouldSuppressFeatureIntros() && SCIViewControllerTreeLooksLikeFeatureIntro(self, 0)) {
+        SCITeardownIntroViewController(self);
+        return;
+    }
+    %orig;
+}
+
+%end
+
+static BOOL SCIPartialModalSheetShouldBeSuppressed(UIViewController *sheet) {
+    if (!SCIShouldSuppressFeatureIntros() || !sheet) return NO;
+    if (SCIViewControllerTreeLooksLikeFeatureIntro(sheet, 0)) return YES;
+
+    UIViewController *content = SCIRepresentativeContentViewController(sheet);
+    if (content != sheet && SCIViewControllerTreeLooksLikeFeatureIntro(content, 0)) return YES;
+
+    return NO;
+}
+
+%hook IGPartialModalSheetViewController
+
+- (void)viewWillAppear:(BOOL)animated {
+    if (SCIPartialModalSheetShouldBeSuppressed(self)) {
+        SCITeardownIntroViewController(self);
+        return;
+    }
+    %orig;
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    if (SCIPartialModalSheetShouldBeSuppressed(self)) {
+        SCITeardownIntroViewController(self);
+        return;
+    }
+    %orig;
+}
+
+%end
+
+%hook IGPartialModalSheetNavigationController
+
+- (void)viewWillAppear:(BOOL)animated {
+    if (SCIPartialModalSheetShouldBeSuppressed(self)) {
+        SCITeardownIntroViewController(self);
+        return;
+    }
+    %orig;
+}
+
+%end
+
+%hook UIWindow
+
+- (void)addSubview:(UIView *)view {
+    %orig;
+    if (!SCIShouldSuppressFeatureIntros() || !view) return;
+
+    SCIStripIntroOverlayIfPresentInView(view);
+
+    __weak UIView *weakView = view;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        SCIStripIntroOverlayIfPresentInView(weakView);
+    });
 }
 
 %end

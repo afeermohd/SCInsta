@@ -1,5 +1,6 @@
 #import "SCIFeatureSchedule.h"
 #import "../Utils.h"
+#import <objc/message.h>
 
 NSNotificationName const SCIFeatureScheduleAvailabilityChangedNotification = @"SCIFeatureScheduleAvailabilityChangedNotification";
 
@@ -21,9 +22,14 @@ static NSTimer *SCISchedulePollTimer;
     [nc addObserver:self selector:@selector(_applicationDidEnterBackground:) name:UIApplicationDidEnterBackgroundNotification object:nil];
     [nc addObserver:self selector:@selector(_applicationWillEnterForeground:) name:UIApplicationWillEnterForegroundNotification object:nil];
 
-    SCISchedulePollTimer = [NSTimer scheduledTimerWithTimeInterval:30.0 repeats:YES block:^(NSTimer * _Nonnull timer) {
+    SCISchedulePollTimer = [NSTimer scheduledTimerWithTimeInterval:10.0 repeats:YES block:^(NSTimer * _Nonnull timer) {
         [SCIFeatureSchedule _pollScheduleAvailability];
     }];
+    [[NSRunLoop mainRunLoop] addTimer:SCISchedulePollTimer forMode:NSRunLoopCommonModes];
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [SCIFeatureSchedule syncScheduleEnforcement];
+    });
 }
 
 + (NSString *)_featureKeyForSurfaceTabString:(NSString *)tabString {
@@ -54,15 +60,114 @@ static NSTimer *SCISchedulePollTimer;
 
         BOOL allowed = [self isAvailableForKey:featureKey];
         NSNumber *previous = SCILastSurfaceAllowedByFeature[featureKey];
-        if (previous && previous.boolValue != allowed) {
+        if (!previous || previous.boolValue != allowed) {
             changed = YES;
         }
         SCILastSurfaceAllowedByFeature[featureKey] = @(allowed);
     }
 
     if (anyEnabled && changed) {
-        [self notifyAvailabilityChanged];
+        [self syncScheduleEnforcement];
     }
+}
+
++ (Class)_tabBarControllerClass {
+    return NSClassFromString(@"IGTabBarController");
+}
+
++ (nullable id)_findTabBarControllerInViewController:(UIViewController *)viewController {
+    if (!viewController) return nil;
+
+    Class tabBarClass = [self _tabBarControllerClass];
+    if (tabBarClass && [viewController isKindOfClass:tabBarClass]) {
+        return viewController;
+    }
+
+    for (UIViewController *child in viewController.childViewControllers) {
+        id found = [self _findTabBarControllerInViewController:child];
+        if (found) return found;
+    }
+
+    return [self _findTabBarControllerInViewController:viewController.presentedViewController];
+}
+
++ (nullable id)_mainTabBarController {
+    UIWindow *keyWindow = nil;
+    for (UIWindow *window in [UIApplication sharedApplication].windows) {
+        if (window.isKeyWindow) {
+            keyWindow = window;
+            break;
+        }
+    }
+    if (!keyWindow) {
+        keyWindow = [UIApplication sharedApplication].windows.firstObject;
+    }
+    return [self _findTabBarControllerInViewController:keyWindow.rootViewController];
+}
+
++ (nullable NSString *)_featureKeyForSelectedTabOnTabBarController:(id)tabBarController {
+    if (!tabBarController) return nil;
+
+    id surface = nil;
+    @try {
+        surface = [tabBarController valueForKey:@"_selectedTabBarSurface"];
+    } @catch (__unused NSException *exception) {
+        return nil;
+    }
+
+    if (![surface respondsToSelector:@selector(tabStringFromSurfaceIntent)]) return nil;
+
+    NSString *tabString = [surface tabStringFromSurfaceIntent];
+    return [self _featureKeyForSurfaceTabString:tabString];
+}
+
++ (void)_switchTabBarController:(id)tabBarController toFirstAllowedSurfaceAnimated:(BOOL)animated {
+    if (!tabBarController) return;
+
+    NSArray *surfaces = nil;
+    @try {
+        surfaces = [tabBarController valueForKey:@"_tabBarSurfaces"];
+    } @catch (__unused NSException *exception) {
+        surfaces = nil;
+    }
+
+    for (id surface in surfaces) {
+        if (![surface respondsToSelector:@selector(tabStringFromSurfaceIntent)]) continue;
+
+        NSString *tabString = [surface tabStringFromSurfaceIntent];
+        if (![self isMainAppSurfaceAllowed:tabString]) continue;
+
+        if ([tabBarController respondsToSelector:@selector(setSelectedTabBarSurface:animated:)]) {
+            ((void (*)(id, SEL, id, BOOL))objc_msgSend)(tabBarController, @selector(setSelectedTabBarSurface:animated:), surface, animated);
+            return;
+        }
+    }
+
+    if ([tabBarController respondsToSelector:@selector(_profileButtonPressed)]) {
+        ((void (*)(id, SEL))objc_msgSend)(tabBarController, @selector(_profileButtonPressed));
+    }
+}
+
++ (void)enforceLeavingFeatureIfActive:(NSString *)featureKey {
+    if (!featureKey.length) return;
+    if ([self isFeatureNavigationAllowed:featureKey]) return;
+
+    id tabBarController = [self _mainTabBarController];
+    NSString *activeKey = [self _featureKeyForSelectedTabOnTabBarController:tabBarController];
+    if (![activeKey isEqualToString:featureKey]) return;
+
+    [self _switchTabBarController:tabBarController toFirstAllowedSurfaceAnimated:YES];
+}
+
++ (void)syncScheduleEnforcement {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        for (NSString *featureKey in @[ @"feed", @"reels", @"explore", @"messages" ]) {
+            if ([self isScheduleEnabledForKey:featureKey]) {
+                [self enforceLeavingFeatureIfActive:featureKey];
+            }
+        }
+        [self notifyAvailabilityChanged];
+    });
 }
 
 + (BOOL)isFeatureNavigationAllowed:(NSString *)featureKey {
@@ -291,7 +396,7 @@ static NSTimer *SCISchedulePollTimer;
 }
 
 + (void)_applicationWillEnterForeground:(NSNotification *)note {
-    [self notifyAvailabilityChanged];
+    [self syncScheduleEnforcement];
 }
 
 @end

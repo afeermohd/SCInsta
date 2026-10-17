@@ -23,6 +23,10 @@ FOUNDATION_EXPORT NSNotificationName const SCIFeatureScheduleAvailabilityChanged
 + (void)endUseForKey:(NSString *)featureKey;
 + (void)notifyAvailabilityChanged;
 
+/// Re-apply schedule state (tab bar, active tab) on the main thread — e.g. after window/limit changes.
++ (void)syncScheduleEnforcement;
++ (void)enforceLeavingFeatureIfActive:(NSString *)featureKey;
+
 + (NSString *)formattedTimeFromMinutes:(NSInteger)minutes;
 
 @end

@@ -55,6 +55,8 @@
 
 @interface IGTabBarController : UIViewController
 - (void)_layoutTabBar;
+- (void)setSelectedTabBarSurface:(id)surface animated:(BOOL)animated;
+- (void)_profileButtonPressed;
 @end
 
 @interface IGTableViewCell: UITableViewCell
