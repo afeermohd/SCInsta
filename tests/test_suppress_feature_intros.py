@@ -60,6 +60,22 @@ static BOOL SCIShouldSuppressFeatureIntros(void) {
 }
 @end
 @implementation IGCustomAlertViewController
+- (id)view { abort(); } // Matching must never force a view load.
+- (id)viewIfLoaded { abort(); }
+@end
+@interface IGPopoverNavigationController : NSObject
+@property(nonatomic, strong) id topViewController;
+@end
+@implementation IGPopoverNavigationController
+- (id)view { abort(); }
+- (id)viewIfLoaded { abort(); }
+@end
+@interface IGPopoverController : NSObject
+@property(nonatomic, strong) id navigationController;
+@end
+@implementation IGPopoverController
+- (id)view { abort(); }
+- (id)viewIfLoaded { abort(); }
 @end
 '''
 
@@ -149,6 +165,18 @@ int main(int argc, const char *argv[]) {
         assert(SCIMapIntroPromoDialogFromPopover(popover, [NSString class]) == nil);
         assert(SCIMapIntroPromoDialogFromPopover(@{@"navigationController": @{@"topViewController": [NSObject new]}}, [SCIMapPromoDialogView class]) == nil);
         assert(SCIMapIntroPromoDialogFromPopover([NSObject new], [SCIMapPromoDialogView class]) == nil);
+        IGPopoverNavigationController *navigation = [IGPopoverNavigationController new];
+        navigation.topViewController = root;
+        IGPopoverController *nativePopover = [IGPopoverController new];
+        nativePopover.navigationController = navigation;
+        NSArray *nativeHosts = @[nativePopover, navigation, root];
+        for (id host in nativeHosts) {
+            assert(SCIMapIntroPromoDialogFromPresentation(host, [SCIMapPromoDialogView class]) == dialog);
+            assert(!SCIHandleNativeMapIntroPresentation(host, [SCIMapPromoDialogView class])); // OFF: first show untouched.
+        }
+        // Arbitrary containers/partial sheets with the same child are not candidates.
+        assert(SCIMapIntroPromoDialogFromPresentation(popover, [SCIMapPromoDialogView class]) == nil);
+        assert(SCIMapIntroPromoDialogFromPresentation(@{@"topViewController": root}, [SCIMapPromoDialogView class]) == nil);
 
         [SCITestDefaults setBool:YES forKey:@"suppress_feature_intros"];
         assert(SCIShouldSkipInstagramMapIntro());
@@ -160,6 +188,23 @@ int main(int argc, const char *argv[]) {
         assert(dialog.secondaryActionCount == 1);
         assert(SCIInstagramMapIntroMarkedCompleted());
         [SCITestDefaults setBool:NO forKey:@"suppress_feature_intros"];
+
+        SCIMapPromoDialogView *earlyDialog = [SCIMapPromoDialogView new];
+        earlyDialog.title = @"Introducing the Instagram map";
+        earlyDialog.reenterShow = YES;
+        root->_alertView = earlyDialog;
+        // All three native UIKit targets are cancelled before any window/view exists.
+        for (id host in nativeHosts) assert(SCIHandleNativeMapIntroPresentation(host, [SCIMapPromoDialogView class]));
+        assert(earlyDialog.window == nil);
+        assert(earlyDialog.secondaryActionCount == 3);
+        earlyDialog.title = @"Introducing reactions";
+        for (id host in nativeHosts) assert(!SCIHandleNativeMapIntroPresentation(host, [SCIMapPromoDialogView class]));
+        assert(earlyDialog.secondaryActionCount == 3);
+        earlyDialog.title = @"Instagram Map";
+        for (id host in nativeHosts) assert(!SCIHandleNativeMapIntroPresentation(host, [SCIMapPromoDialogView class]));
+        root->_alertView = [NSObject new]; // Same native alert host, non-promo content.
+        for (id host in nativeHosts) assert(!SCIHandleNativeMapIntroPresentation(host, [SCIMapPromoDialogView class]));
+        assert(!SCIHandleNativeMapIntroPresentation([NSObject new], [SCIMapPromoDialogView class]));
 
         SCIMapPromoDialogView *repeat = [SCIMapPromoDialogView new];
         repeat.title = [[NSAttributedString alloc] initWithString:@"Introducing the Instagram map"];
@@ -204,7 +249,10 @@ def main():
         "SCIIntroValueForKey",
         "SCIIsInstagramMapIntroPromoDialog",
         "SCIHandleMapIntroPromoDialogBeforeShow",
+        "SCIMapIntroPromoDialogFromAlertController",
         "SCIMapIntroPromoDialogFromPopover",
+        "SCIMapIntroPromoDialogFromPresentation",
+        "SCIHandleNativeMapIntroPresentation",
         "SCIMapIntroMetadataMatches",
         "SCIIsInstagramMapIntroPromotion",
         "SCIIntroMethodHasSignature",
@@ -223,7 +271,7 @@ def main():
                 subprocess.run([str(executable), suite, mode], check=True)
         finally:
             subprocess.run([str(executable), suite, "cleanup"], check=True)
-    print("PASS: native promo-card skip/reentrancy/reuse, intro matching, QP IDs, ABI guards, and restart persistence")
+    print("PASS: pre-attachment native presentation gates, promo-card skip/reentrancy/reuse, QP IDs, ABI guards, and restart persistence")
 
 
 if __name__ == "__main__":

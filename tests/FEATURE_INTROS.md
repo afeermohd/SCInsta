@@ -12,7 +12,8 @@ This compiles and runs the Foundation-only helpers extracted from the actual
 Logos source. It checks Map-only matching, nested Bloks creative metadata,
 bounded payload traversal, runtime signature guards, and persisted completion
 and promotion IDs in a second process. It also tests the native promo-card title,
-popover-to-alert lookup, native Not now dispatch, reentrancy, and card reuse with
+popover/navigation/direct-alert lookup, pre-attachment presentation cancellation,
+native Not now dispatch, reentrancy, and card reuse with
 Foundation mocks. It uses an isolated defaults suite and
 removes that suite afterward; it does not change Instagram's preferences.
 
@@ -32,8 +33,16 @@ Instagram **418.2.0**, build **893787717**. Its Objective-C metadata confirms:
   `customAlertView:didTapAction:` delegate callback.
 - `IGPopoverController` in `FBSharedFramework`: `present` (`v16@0:8`) and
   `navigationController` (`@16@0:8`). The native promo dialog uses this popover
-  host, which can be intercepted before backdrop presentation even when Swift
-  callers bypass the dialog's Objective-C `show` thunk.
+  host. Hooking `present` alone does **not** cover all presentation routes.
+- `FBSharedFramework` also exports direct-call functions named
+  `-<IGPopoverController presentOverFullScreen>`,
+  `-<IGPopoverController presentOverFullScreenWithCompletion:>`, and
+  `-<IGPopoverController presentFromViewController:overFullScreen:completion:>`.
+  These bypass the runtime `present` selector. Their common implementation
+  eventually sends UIKit's `presentViewController:animated:completion:`.
+  Gate that call only for `IGPopoverController`, `IGPopoverNavigationController`,
+  or `IGCustomAlertViewController` containing the verified promo view and a
+  matching Map-intro title. Never block a generic Bloks/partial-sheet class.
 - The native secondary-action implementation forwards the configured action to
   the alert delegate. Its sender is not used for touch-coordinate calculations.
   In contrast, `dismissAlertView:` is a **gesture handler** that ignores taps
@@ -71,9 +80,12 @@ builds may already have set it just from opening the inbox with suppression on.
   sheets for unrelated DM content. Verify no stale Map flag dismisses that content.
 - **Feature limits:** Smoke-test scheduled tab limits unchanged.
 
-For the native promo card, `IGPopoverController` is the pre-presentation path.
-The view-window/layout fallback handles alternate hosts with the native Not now
-action after presentation settles. Legacy sheets use UIKit dismissal. Fallbacks
+For the native promo card, both `IGPopoverController.present` and the strictly
+matched UIKit presentation gate are pre-presentation paths. A cancelled Map card
+uses native Not now; it must not invoke the skipped presentation's success
+completion. Non-Map presentations and their completion blocks remain untouched.
+The view-window/layout fallback handles alternate hosts with native Not now
+after presentation settles. Legacy sheets use UIKit dismissal. Fallbacks
 cannot promise zero frames of visible intro, and deliberately leave unknown
 custom containers alone rather than tearing down views or guessing state enums.
 

@@ -171,9 +171,7 @@ static BOOL SCIHandleMapIntroPromoDialogBeforeShow(id dialog) {
     return YES;
 }
 
-static id SCIMapIntroPromoDialogFromPopover(id popover, Class promoDialogClass) {
-    id navigation = SCIIntroValueForKey(popover, @"navigationController");
-    id root = SCIIntroValueForKey(navigation, @"topViewController");
+static id SCIMapIntroPromoDialogFromAlertController(id root, Class promoDialogClass) {
     if (![root isKindOfClass:NSClassFromString(@"IGCustomAlertViewController")]) return nil;
     // Verified object ivar in 418.2.0; do not load a VC's view to identify it.
     Ivar alertViewIvar = class_getInstanceVariable([root class], "_alertView");
@@ -181,6 +179,29 @@ static id SCIMapIntroPromoDialogFromPopover(id popover, Class promoDialogClass) 
     if (!encoding || encoding[0] != '@') return nil;
     id alertView = object_getIvar(root, alertViewIvar);
     return [alertView isKindOfClass:promoDialogClass] ? alertView : nil;
+}
+
+static id SCIMapIntroPromoDialogFromPopover(id popover, Class promoDialogClass) {
+    id navigation = SCIIntroValueForKey(popover, @"navigationController");
+    return SCIMapIntroPromoDialogFromAlertController(SCIIntroValueForKey(navigation, @"topViewController"), promoDialogClass);
+}
+
+static id SCIMapIntroPromoDialogFromPresentation(id controller, Class promoDialogClass) {
+    // Only verified native alert hosts. Do not inspect arbitrary VC/view trees or
+    // treat a generic Bloks/partial-sheet wrapper as a Map promotion.
+    if ([controller isKindOfClass:NSClassFromString(@"IGPopoverController")]) {
+        return SCIMapIntroPromoDialogFromPopover(controller, promoDialogClass);
+    }
+    if ([controller isKindOfClass:NSClassFromString(@"IGPopoverNavigationController")]) {
+        return SCIMapIntroPromoDialogFromAlertController(SCIIntroValueForKey(controller, @"topViewController"), promoDialogClass);
+    }
+    return SCIMapIntroPromoDialogFromAlertController(controller, promoDialogClass);
+}
+
+static BOOL SCIHandleNativeMapIntroPresentation(id controller, Class promoDialogClass) {
+    if (!SCIShouldSkipInstagramMapIntro()) return NO;
+    id dialog = SCIMapIntroPromoDialogFromPresentation(controller, promoDialogClass);
+    return dialog && SCIHandleMapIntroPromoDialogBeforeShow(dialog);
 }
 
 static void SCIScanMapIntroPromoDialog(UIView *dialog) {
@@ -582,6 +603,23 @@ static void SCIDidDisappearMapIntroSheet(UIViewController *sheet) {
 %end
 %end
 
+%group SCIMapIntroNativePresentation
+%hook UIViewController
+
+- (void)presentViewController:(UIViewController *)controller animated:(BOOL)animated completion:(void (^)(void))completion {
+    // IGPopoverController's fullscreen/direct-call entry points bypass its
+    // ObjC -present hook, but converge here before UIKit attaches any backdrop.
+    if (SCIHandleNativeMapIntroPresentation(controller, NSClassFromString(@"_TtC15IGDSPromoDialog19IGDSPromoDialogView"))) {
+        // This is a cancellation via native Not now, not a successful UIKit
+        // presentation. Do not run its success completion after cancelling it.
+        return;
+    }
+    %orig;
+}
+
+%end
+%end
+
 %hook IGPartialModalSheetViewController
 
 - (void)viewDidAppear:(BOOL)animated {
@@ -674,6 +712,7 @@ static BOOL SCIIntroMethodHasSignature(Class cls, SEL selector, const char *retu
         SCIIntroMethodHasSignature(promoDialogClass, NSSelectorFromString(@"primaryActionTapped:"), @encode(void), @[ @"@" ]) &&
         SCIIntroMethodHasSignature(promoDialogClass, NSSelectorFromString(@"dismissAlertView:"), @encode(void), @[ @"@" ])) {
         %init(SCIMapIntroPromoDialog, SCIMapPromoDialogView = promoDialogClass);
+        %init(SCIMapIntroNativePresentation);
         Class popoverClass = NSClassFromString(@"IGPopoverController");
         if (SCIIntroMethodHasSignature(popoverClass, NSSelectorFromString(@"present"), @encode(void), @[]) &&
             SCIIntroMethodHasSignature(popoverClass, NSSelectorFromString(@"navigationController"), @encode(id), @[])) {
