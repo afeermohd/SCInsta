@@ -43,6 +43,9 @@
 @interface IGExploreGridViewController : IGViewController
 @end
 
+@interface IGExploreViewController : IGViewController
+@end
+
 @interface UIImage ()
 - (NSString *)ig_imageName;
 @end
@@ -54,6 +57,9 @@
 @end
 
 @interface IGTabBarController : UIViewController
+- (void)_layoutTabBar;
+- (void)setSelectedTabBarSurface:(id)surface animated:(BOOL)animated;
+- (void)_profileButtonPressed;
 @end
 
 @interface IGTableViewCell: UITableViewCell

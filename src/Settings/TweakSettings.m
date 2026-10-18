@@ -75,6 +75,10 @@
                                             ]
                                         }]
                 ],
+                [SCISetting navigationCellWithTitle:@"Feature limits"
+                                           subtitle:@"Daily time windows and usage caps"
+                                               icon:[SCISymbol symbolWithName:@"clock.badge.checkmark"]
+                                        navSections:[self featureScheduleSections]],
                 [SCISetting navigationCellWithTitle:@"Reels"
                                            subtitle:@""
                                                icon:[SCISymbol symbolWithName:@"film.stack"]
@@ -280,6 +284,59 @@
     ];
 }
 
+
+// MARK: - Feature schedules
+
++ (NSArray *)_scheduleRowsForFeature:(NSString *)featureKey title:(NSString *)title {
+    NSString *prefix = [NSString stringWithFormat:@"schedule_%@", featureKey];
+    return @[
+        [SCISetting switchCellWithTitle:[NSString stringWithFormat:@"Limit %@", title]
+                               subtitle:@"When enabled, this section is only usable inside the window below"
+                            defaultsKey:[prefix stringByAppendingString:@"_enabled"]],
+        [SCISetting stepperCellWithTitle:@"Window start (hour)"
+                                subtitle:@"Starts at %@:00 (24h)" defaultsKey:[prefix stringByAppendingString:@"_start_hour"]
+                                     min:0 max:23 step:1 label:@"h" singularLabel:@"h"],
+        [SCISetting stepperCellWithTitle:@"Window start (minute)"
+                                subtitle:@"Starts at :%@ past the hour" defaultsKey:[prefix stringByAppendingString:@"_start_minute"]
+                                     min:0 max:59 step:1 label:@"min" singularLabel:@"min"],
+        [SCISetting stepperCellWithTitle:@"Window end (hour)"
+                                subtitle:@"Ends at %@:00 (24h). End before start for overnight windows" defaultsKey:[prefix stringByAppendingString:@"_end_hour"]
+                                     min:0 max:23 step:1 label:@"h" singularLabel:@"h"],
+        [SCISetting stepperCellWithTitle:@"Window end (minute)"
+                                subtitle:@"Ends at :%@ past the hour" defaultsKey:[prefix stringByAppendingString:@"_end_minute"]
+                                     min:0 max:59 step:1 label:@"min" singularLabel:@"min"],
+        [SCISetting stepperCellWithTitle:@"Usage limit"
+                                subtitle:@"%@ %@ per window (0 = unlimited)" defaultsKey:[prefix stringByAppendingString:@"_limit_minutes"]
+                                     min:0 max:600 step:5 label:@"min" singularLabel:@"min"]
+    ];
+}
+
++ (NSArray *)featureScheduleSections {
+    return @[
+        @{
+            @"header": @"",
+            @"rows": @[
+                [SCISetting navigationCellWithTitle:@"Reels"
+                                           subtitle:@""
+                                               icon:[SCISymbol symbolWithName:@"film.stack"]
+                                        navSections:@[@{ @"header": @"", @"rows": [self _scheduleRowsForFeature:@"reels" title:@"reels"] }]],
+                [SCISetting navigationCellWithTitle:@"Feed"
+                                           subtitle:@""
+                                               icon:[SCISymbol symbolWithName:@"rectangle.stack"]
+                                        navSections:@[@{ @"header": @"", @"rows": [self _scheduleRowsForFeature:@"feed" title:@"feed"] }]],
+                [SCISetting navigationCellWithTitle:@"Explore"
+                                           subtitle:@""
+                                               icon:[SCISymbol symbolWithName:@"magnifyingglass"]
+                                        navSections:@[@{ @"header": @"", @"rows": [self _scheduleRowsForFeature:@"explore" title:@"explore"] }]],
+                [SCISetting navigationCellWithTitle:@"Messages"
+                                           subtitle:@""
+                                               icon:[SCISymbol symbolWithName:@"paperplane"]
+                                        navSections:@[@{ @"header": @"", @"rows": [self _scheduleRowsForFeature:@"messages" title:@"messages"] }]]
+            ],
+            @"footer": @"When a limit applies, the matching tab is removed from the bottom navigation (like Hide reels tab). Usage is tracked only while that screen is open, pauses in the background, and resets when each window opens."
+        }
+    ];
+}
 
 // MARK: - Title
 

@@ -41,7 +41,31 @@ BOOL dmVisualMsgsViewedButtonEnabled = false;
         @"enable_notes_customization": @(YES),
         @"custom_note_themes": @(YES),
         @"disable_auto_unmuting_reels": @(YES),
-        @"doom_scrolling_reel_count": @(1)
+        @"doom_scrolling_reel_count": @(1),
+        @"schedule_reels_enabled": @(NO),
+        @"schedule_reels_start_hour": @(18),
+        @"schedule_reels_start_minute": @(0),
+        @"schedule_reels_end_hour": @(21),
+        @"schedule_reels_end_minute": @(0),
+        @"schedule_reels_limit_minutes": @(0),
+        @"schedule_feed_enabled": @(NO),
+        @"schedule_feed_start_hour": @(8),
+        @"schedule_feed_start_minute": @(0),
+        @"schedule_feed_end_hour": @(9),
+        @"schedule_feed_end_minute": @(0),
+        @"schedule_feed_limit_minutes": @(0),
+        @"schedule_explore_enabled": @(NO),
+        @"schedule_explore_start_hour": @(12),
+        @"schedule_explore_start_minute": @(0),
+        @"schedule_explore_end_hour": @(13),
+        @"schedule_explore_end_minute": @(0),
+        @"schedule_explore_limit_minutes": @(0),
+        @"schedule_messages_enabled": @(NO),
+        @"schedule_messages_start_hour": @(17),
+        @"schedule_messages_start_minute": @(0),
+        @"schedule_messages_end_hour": @(22),
+        @"schedule_messages_end_minute": @(0),
+        @"schedule_messages_limit_minutes": @(0)
     };
     [[NSUserDefaults standardUserDefaults] registerDefaults:sciDefaults];
     
