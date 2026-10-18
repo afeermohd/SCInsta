@@ -25,6 +25,7 @@ BOOL dmVisualMsgsViewedButtonEnabled = false;
     NSDictionary *sciDefaults = @{
         @"hide_ads": @(YES),
         @"copy_description": @(YES),
+        @"suppress_feature_intros": @(YES),
         @"detailed_color_picker": @(YES),
         @"remove_screenshot_alert": @(YES),
         @"call_confirm": @(YES),
