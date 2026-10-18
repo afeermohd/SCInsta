@@ -9,6 +9,7 @@ NS_ASSUME_NONNULL_BEGIN
 @interface SCITweakSettings : NSObject
 
 + (NSArray *)sections;
++ (NSArray *)featureScheduleSections;
 + (NSString *)title;
 + (NSDictionary *)menus;
 
