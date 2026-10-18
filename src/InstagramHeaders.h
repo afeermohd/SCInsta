@@ -343,6 +343,13 @@
 @interface IGDirectInboxConfig : NSObject
 @end
 
+@interface IGDirectNUXManager : NSObject
+- (void)markTooltipOfTypeAsCompleted:(unsigned long long)type;
+- (void)markNuxAsCompletedWithKey:(id)key;
+- (_Bool)nuxWithKeyIsCompleted:(id)key;
+- (_Bool)canShowNUXBasedOnLastTimestampForKey:(id)key;
+@end
+
 @interface IGDirectMediaPickerConfig : NSObject
 @end
 
