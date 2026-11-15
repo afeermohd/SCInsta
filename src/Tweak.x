@@ -1,4 +1,5 @@
 #import <substrate.h>
+#import <objc/runtime.h>
 #import "InstagramHeaders.h"
 #import "Tweak.h"
 #import "Utils.h"
@@ -25,7 +26,6 @@ BOOL dmVisualMsgsViewedButtonEnabled = false;
     NSDictionary *sciDefaults = @{
         @"hide_ads": @(YES),
         @"copy_description": @(YES),
-        @"suppress_feature_intros": @(YES),
         @"detailed_color_picker": @(YES),
         @"remove_screenshot_alert": @(YES),
         @"call_confirm": @(YES),
@@ -43,30 +43,20 @@ BOOL dmVisualMsgsViewedButtonEnabled = false;
         @"custom_note_themes": @(YES),
         @"disable_auto_unmuting_reels": @(YES),
         @"doom_scrolling_reel_count": @(1),
-        @"schedule_reels_enabled": @(NO),
-        @"schedule_reels_start_hour": @(18),
-        @"schedule_reels_start_minute": @(0),
-        @"schedule_reels_end_hour": @(21),
-        @"schedule_reels_end_minute": @(0),
-        @"schedule_reels_limit_minutes": @(0),
-        @"schedule_feed_enabled": @(NO),
-        @"schedule_feed_start_hour": @(8),
-        @"schedule_feed_start_minute": @(0),
-        @"schedule_feed_end_hour": @(9),
-        @"schedule_feed_end_minute": @(0),
-        @"schedule_feed_limit_minutes": @(0),
-        @"schedule_explore_enabled": @(NO),
-        @"schedule_explore_start_hour": @(12),
-        @"schedule_explore_start_minute": @(0),
-        @"schedule_explore_end_hour": @(13),
-        @"schedule_explore_end_minute": @(0),
-        @"schedule_explore_limit_minutes": @(0),
-        @"schedule_messages_enabled": @(NO),
-        @"schedule_messages_start_hour": @(17),
-        @"schedule_messages_start_minute": @(0),
-        @"schedule_messages_end_hour": @(22),
-        @"schedule_messages_end_minute": @(0),
-        @"schedule_messages_limit_minutes": @(0)
+        @"suppress_feature_intros": @(YES),
+        @"skip_call_update_prompt": @(YES),
+        @"hide_testflight_update_nag": @(YES),
+        @"schedule_enabled": @(NO),
+        @"schedule_start_hour": @(18),
+        @"schedule_start_minute": @(0),
+        @"schedule_end_hour": @(22),
+        @"schedule_end_minute": @(0),
+        @"schedule_limit_minutes": @(60),
+        @"schedule_surface_feed_posts": @(YES),
+        @"schedule_surface_stories": @(YES),
+        @"schedule_surface_reels": @(YES),
+        @"schedule_surface_explore": @(YES),
+        @"schedule_show_timer": @(YES)
     };
     [[NSUserDefaults standardUserDefaults] registerDefaults:sciDefaults];
     
@@ -371,7 +361,23 @@ shouldPersistLastBugReportId:(id)arg6
 %end
 
 // Direct suggested chats (inbox view)
-%hook IGDirectInboxListAdapterDataSource
+// Instagram 455 moved the inbox data source and notes tray row model into Swift; %ctor binds whichever
+// data source class exists.
+@interface SCIInboxListAdapterDataSource : NSObject
+@end
+
+static Class SCINotesTrayRowViewModelClass(void) {
+    static Class cls;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        cls = objc_getClass("IGDirectNotesTrayRowViewModel")
+            ?: objc_getClass("_TtC28IGDirectNotesViewModelsSwift29IGDirectNotesTrayRowViewModel");
+    });
+    return cls;
+}
+
+%group SCIInboxDataSource
+%hook SCIInboxListAdapterDataSource
 - (id)objectsForListAdapter:(id)arg1 {
     NSArray *originalObjs = %orig();
     NSMutableArray *filteredObjs = [NSMutableArray arrayWithCapacity:[originalObjs count]];
@@ -421,7 +427,7 @@ shouldPersistLastBugReportId:(id)arg6
         }
 
         // Hide notes tray
-        else if ([obj isKindOfClass:%c(IGDirectNotesTrayRowViewModel)]) {
+        else if ((SCINotesTrayRowViewModelClass() && [obj isKindOfClass:SCINotesTrayRowViewModelClass()])) {
             if ([SCIUtils getBoolPref:@"hide_notes_tray"]) {
                 NSLog(@"[SCInsta] Hiding notes tray");
 
@@ -438,6 +444,7 @@ shouldPersistLastBugReportId:(id)arg6
 
     return [filteredObjs copy];
 }
+%end
 %end
 
 // Explore page results
@@ -738,3 +745,13 @@ shouldPersistLastBugReportId:(id)arg6
     return %orig;
 }
 %end
+
+%ctor {
+    %init;
+
+    Class inboxDataSourceClass = objc_getClass("IGDirectInboxListAdapterDataSource")
+        ?: objc_getClass("_TtC34IGDirectInboxListAdapterDataSource34IGDirectInboxListAdapterDataSource");
+    if (inboxDataSourceClass) {
+        %init(SCIInboxDataSource, SCIInboxListAdapterDataSource = inboxDataSourceClass);
+    }
+}

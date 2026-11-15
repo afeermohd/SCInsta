@@ -1,4 +1,5 @@
 #import "../../Utils.h"
+#import <objc/runtime.h>
 
 #define QUICKSNAPENABLED(orig) return [SCIUtils getBoolPref:@"disable_instants_creation"] ? false : orig;
 
@@ -26,6 +27,13 @@
     QUICKSNAPENABLED(%orig);
 }
 + (_Bool)isQuicksnapNotesTrayEmptyPogEnabled:(id)enabled {
+    QUICKSNAPENABLED(%orig);
+}
+// Instagram 455
++ (_Bool)isQuicksnapCornerstackEnabledInProfile:(id)profile {
+    QUICKSNAPENABLED(%orig);
+}
++ (_Bool)shouldAttachQuickSnapServiceForBadging:(id)badging {
     QUICKSNAPENABLED(%orig);
 }
 // + (_Bool)isStoriesSpringEnabled:(id)enabled {
@@ -56,3 +64,71 @@
 //     return true;
 // }
 // %end
+// Instagram 455 checks Instants mostly from Swift, which skips the helper's ObjC entry points above.
+// Block the inbox entry points that are still reached through ObjC. %ctor binds the Swift classes.
+@interface SCIInstantsDelegateImpl : NSObject
+- (BOOL)shouldShowTryInstants;
+@end
+@interface SCIDirectInboxViewController : UIViewController
+- (void)tryShowQuickSnapPeek;
+@end
+@interface SCIDirectInboxCameraMediaCoordinator : NSObject
+- (void)tryShowQuickSnapPeek;
+@end
+
+static BOOL SCIInstantsDisabled(void) {
+    return [SCIUtils getBoolPref:@"disable_instants_creation"];
+}
+
+%group SCIInstantsTryPrompt
+%hook SCIInstantsDelegateImpl
+- (BOOL)shouldShowTryInstants {
+    if (SCIInstantsDisabled()) return NO;
+    return %orig;
+}
+%end
+%end
+
+%group SCIInstantsInboxPeek
+%hook SCIDirectInboxViewController
+- (void)tryShowQuickSnapPeek {
+    if (SCIInstantsDisabled()) return;
+    %orig;
+}
+%end
+%end
+
+%group SCIInstantsCameraPeek
+%hook SCIDirectInboxCameraMediaCoordinator
+- (void)tryShowQuickSnapPeek {
+    if (SCIInstantsDisabled()) return;
+    %orig;
+}
+%end
+%end
+
+static BOOL SCIInstantsClassHasMethod(Class cls, SEL selector, const char *types) {
+    Method method = cls ? class_getInstanceMethod(cls, selector) : NULL;
+    return method && strcmp(method_getTypeEncoding(method), types) == 0;
+}
+
+%ctor {
+    %init;
+
+    Class delegateClass = objc_getClass("_TtC18IGInstantsDelegate22IGInstantsDelegateImpl");
+    if (SCIInstantsClassHasMethod(delegateClass, @selector(shouldShowTryInstants), "B16@0:8")) {
+        %init(SCIInstantsTryPrompt, SCIInstantsDelegateImpl = delegateClass);
+    }
+
+    // Instagram 455 moved the inbox into Swift; 447 still has the ObjC class.
+    Class inboxClass = objc_getClass("_TtC27IGDirectInboxViewController27IGDirectInboxViewController")
+        ?: objc_getClass("IGDirectInboxViewController");
+    if (SCIInstantsClassHasMethod(inboxClass, @selector(tryShowQuickSnapPeek), "v16@0:8")) {
+        %init(SCIInstantsInboxPeek, SCIDirectInboxViewController = inboxClass);
+    }
+
+    Class cameraClass = objc_getClass("_TtC32IGDirectInboxViewControllerSwift35IGDirectInboxCameraMediaCoordinator");
+    if (SCIInstantsClassHasMethod(cameraClass, @selector(tryShowQuickSnapPeek), "v16@0:8")) {
+        %init(SCIInstantsCameraPeek, SCIDirectInboxCameraMediaCoordinator = cameraClass);
+    }
+}

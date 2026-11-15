@@ -78,6 +78,7 @@ builds may already have set it just from opening the inbox with suppression on.
   screen. They should not be dismissed merely because of their wrapper class.
 - **Reuse/covering:** Cover the intro with another controller, then return. Reuse
   sheets for unrelated DM content. Verify no stale Map flag dismisses that content.
+- **Feature limits:** Smoke-test scheduled tab limits unchanged.
 
 For the native promo card, both `IGPopoverController.present` and the strictly
 matched UIKit presentation gate are pre-presentation paths. A cancelled Map card

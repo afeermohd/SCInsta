@@ -4,25 +4,51 @@
 
 NSNotificationName const SCIFeatureScheduleAvailabilityChangedNotification = @"SCIFeatureScheduleAvailabilityChangedNotification";
 
-static NSMutableDictionary<NSString *, NSDate *> *SCIActiveSessionStarts;
-static NSMutableDictionary<NSString *, NSTimer *> *SCIActiveSessionTimers;
-static NSMutableDictionary<NSString *, NSNumber *> *SCILastSurfaceAllowedByFeature;
+NSString *const SCIScheduleFeedPostsKey = @"feed_posts";
+NSString *const SCIScheduleStoriesKey   = @"stories";
+NSString *const SCIScheduleReelsKey     = @"reels";
+NSString *const SCIScheduleExploreKey   = @"explore";
+
+// Preference keys (shared across all limited features)
+static NSString *const kSCIScheduleEnabledKey      = @"schedule_enabled";
+static NSString *const kSCIScheduleStartHourKey    = @"schedule_start_hour";
+static NSString *const kSCIScheduleStartMinuteKey  = @"schedule_start_minute";
+static NSString *const kSCIScheduleEndHourKey      = @"schedule_end_hour";
+static NSString *const kSCIScheduleEndMinuteKey    = @"schedule_end_minute";
+static NSString *const kSCIScheduleLimitMinutesKey = @"schedule_limit_minutes";
+static NSString *const kSCIScheduleUsageWindowKey  = @"schedule_usage_window_id";
+static NSString *const kSCIScheduleUsageSecondsKey = @"schedule_usage_seconds";
+static NSString *const kSCIScheduleShowTimerKey    = @"schedule_show_timer";
+
+// Seconds before the budget runs out at which a heads-up toast is shown.
+static const NSTimeInterval kSCIWarningSeconds = 60.0;
+
+// Tokens ("<feature>:<owner pointer>") of limited surfaces currently on screen. Time is counted once while this set is non-empty,
+// so overlapping surfaces (e.g. feed + reels transition) never double count.
+static NSMutableSet<NSString *> *SCIActiveFeatureKeys;
+static NSDate *SCILastAccountedDate;
+static NSTimer *SCIUsageTickTimer;
 static NSTimer *SCISchedulePollTimer;
+static NSNumber *SCILastUsageAllowed;
+static BOOL SCIWarningShownForWindow;
+static BOOL SCIIsForceClosing;
+
+// Floating "time left" pill shown while a limited surface is on screen.
+static UIView *SCITimerPill;
+static UILabel *SCITimerLabel;
 
 @implementation SCIFeatureSchedule
 
 + (void)initialize {
     if (self != [SCIFeatureSchedule class]) return;
 
-    SCIActiveSessionStarts = [NSMutableDictionary dictionary];
-    SCIActiveSessionTimers = [NSMutableDictionary dictionary];
-    SCILastSurfaceAllowedByFeature = [NSMutableDictionary dictionary];
+    SCIActiveFeatureKeys = [NSMutableSet set];
 
     NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
     [nc addObserver:self selector:@selector(_applicationDidEnterBackground:) name:UIApplicationDidEnterBackgroundNotification object:nil];
     [nc addObserver:self selector:@selector(_applicationWillEnterForeground:) name:UIApplicationWillEnterForegroundNotification object:nil];
 
-    SCISchedulePollTimer = [NSTimer scheduledTimerWithTimeInterval:10.0 repeats:YES block:^(NSTimer * _Nonnull timer) {
+    SCISchedulePollTimer = [NSTimer timerWithTimeInterval:10.0 repeats:YES block:^(NSTimer * _Nonnull timer) {
         [SCIFeatureSchedule _pollScheduleAvailability];
     }];
     [[NSRunLoop mainRunLoop] addTimer:SCISchedulePollTimer forMode:NSRunLoopCommonModes];
@@ -32,53 +58,390 @@ static NSTimer *SCISchedulePollTimer;
     });
 }
 
-+ (NSString *)_featureKeyForSurfaceTabString:(NSString *)tabString {
-    if (!tabString.length) return nil;
+// MARK: - Feature keys
 
-    if ([tabString isEqualToString:@"FEED"] || [tabString isEqualToString:@"HOME"] || [tabString isEqualToString:@"TIMELINE"]) {
-        return @"feed";
-    }
++ (NSArray<NSString *> *)limitedFeatureKeys {
+    return @[ SCIScheduleFeedPostsKey, SCIScheduleStoriesKey, SCIScheduleReelsKey, SCIScheduleExploreKey ];
+}
+
++ (BOOL)isLimitedFeatureKey:(NSString *)featureKey {
+    return featureKey.length && [[self limitedFeatureKeys] containsObject:featureKey];
+}
+
+/// Only the reels tab is ever hidden. Feed stays (camera, stories, DMs live there) and
+/// explore stays (search is always available); their content is hidden instead.
++ (nullable NSString *)_featureKeyForSurfaceTabString:(NSString *)tabString {
     if ([tabString isEqualToString:@"CLIPS"] || [tabString isEqualToString:@"REELS"]) {
-        return @"reels";
-    }
-    if ([tabString isEqualToString:@"SEARCH"] || [tabString isEqualToString:@"EXPLORE"] || [tabString isEqualToString:@"DISCOVER"]) {
-        return @"explore";
-    }
-    if ([tabString isEqualToString:@"DIRECT"] || [tabString isEqualToString:@"DM"] || [tabString isEqualToString:@"INBOX"]) {
-        return @"messages";
+        return SCIScheduleReelsKey;
     }
     return nil;
 }
 
-+ (void)_pollScheduleAvailability {
-    BOOL anyEnabled = NO;
-    BOOL changed = NO;
+// MARK: - Preferences
 
-    for (NSString *featureKey in @[ @"feed", @"reels", @"explore", @"messages" ]) {
-        if (![self isScheduleEnabledForKey:featureKey]) continue;
-        anyEnabled = YES;
++ (BOOL)isScheduleEnabled {
+    return [SCIUtils getBoolPref:kSCIScheduleEnabledKey];
+}
 
-        BOOL allowed = [self isAvailableForKey:featureKey];
-        NSNumber *previous = SCILastSurfaceAllowedByFeature[featureKey];
-        if (!previous || previous.boolValue != allowed) {
-            changed = YES;
-        }
-        SCILastSurfaceAllowedByFeature[featureKey] = @(allowed);
++ (BOOL)isScheduleEnabledForKey:(NSString *)featureKey {
+    if (![self isLimitedFeatureKey:featureKey] || ![self isScheduleEnabled]) return NO;
+    return [SCIUtils getBoolPref:[NSString stringWithFormat:@"schedule_surface_%@", featureKey]];
+}
+
++ (BOOL)isBlockedForKey:(NSString *)featureKey {
+    return [self isScheduleEnabledForKey:featureKey] && ![self isUsageAllowed];
+}
+
++ (NSInteger)_startMinutes {
+    return (NSInteger)[SCIUtils getDoublePref:kSCIScheduleStartHourKey] * 60 + (NSInteger)[SCIUtils getDoublePref:kSCIScheduleStartMinuteKey];
+}
+
++ (NSInteger)_endMinutes {
+    return (NSInteger)[SCIUtils getDoublePref:kSCIScheduleEndHourKey] * 60 + (NSInteger)[SCIUtils getDoublePref:kSCIScheduleEndMinuteKey];
+}
+
++ (NSInteger)_limitMinutes {
+    return (NSInteger)[SCIUtils getDoublePref:kSCIScheduleLimitMinutesKey];
+}
+
++ (NSString *)formattedTimeFromMinutes:(NSInteger)minutes {
+    minutes = ((minutes % (24 * 60)) + (24 * 60)) % (24 * 60);
+    return [NSString stringWithFormat:@"%02ld:%02ld", (long)(minutes / 60), (long)(minutes % 60)];
+}
+
+// MARK: - Window
+
++ (NSInteger)_minutesSinceMidnightForDate:(NSDate *)date {
+    NSDateComponents *c = [[NSCalendar currentCalendar] components:(NSCalendarUnitHour | NSCalendarUnitMinute) fromDate:date];
+    return c.hour * 60 + c.minute;
+}
+
++ (BOOL)_isWithinWindowAtDate:(NSDate *)date {
+    NSInteger start = [self _startMinutes];
+    NSInteger end = [self _endMinutes];
+    NSInteger now = [self _minutesSinceMidnightForDate:date];
+
+    if (start == end) return YES;                       // all day
+    if (start < end) return now >= start && now < end;  // same-day window
+    return now >= start || now < end;                   // overnight window
+}
+
+/// Identifies the current window occurrence (the day it opened + its start time); usage resets when it changes.
++ (NSString *)_windowIdentifierAtDate:(NSDate *)date {
+    NSCalendar *cal = [NSCalendar currentCalendar];
+    NSInteger start = [self _startMinutes];
+    NSInteger now = [self _minutesSinceMidnightForDate:date];
+
+    NSDate *openedOn = date;
+    if (now < start) {
+        // Before today's start: we're either in the tail of yesterday's overnight window,
+        // or before today's window. Both belong to yesterday's occurrence.
+        openedOn = [cal dateByAddingUnit:NSCalendarUnitDay value:-1 toDate:date options:0];
     }
 
-    if (anyEnabled && changed) {
-        [self syncScheduleEnforcement];
+    NSDateComponents *day = [cal components:NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay fromDate:openedOn];
+    return [NSString stringWithFormat:@"%04ld-%02ld-%02ld-%ld",
+            (long)day.year, (long)day.month, (long)day.day, (long)start];
+}
+
+// MARK: - Usage storage
+
++ (void)_resetUsageIfWindowChanged {
+    NSString *current = [self _windowIdentifierAtDate:[NSDate date]];
+    NSString *stored = [SCIUtils getStringPref:kSCIScheduleUsageWindowKey];
+
+    if (![stored isEqualToString:current]) {
+        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+        [defaults setObject:current forKey:kSCIScheduleUsageWindowKey];
+        [defaults setDouble:0 forKey:kSCIScheduleUsageSecondsKey];
+        SCIWarningShownForWindow = NO;
     }
 }
 
-+ (Class)_tabBarControllerClass {
-    return NSClassFromString(@"IGTabBarController");
++ (NSTimeInterval)_storedUsageSeconds {
+    [self _resetUsageIfWindowChanged];
+    return [SCIUtils getDoublePref:kSCIScheduleUsageSecondsKey];
+}
+
+/// Adds time elapsed since the last accounting point to the shared usage counter.
++ (void)_flushActiveUsage {
+    if (!SCILastAccountedDate) return;
+
+    NSDate *now = [NSDate date];
+    NSTimeInterval elapsed = [now timeIntervalSinceDate:SCILastAccountedDate];
+    SCILastAccountedDate = SCIActiveFeatureKeys.count ? now : nil;
+
+    // Ticks run every second; clamp to guard against clock jumps or a stalled main thread.
+    if (elapsed <= 0) return;
+    elapsed = MIN(elapsed, 10.0);
+
+    NSTimeInterval total = [self _storedUsageSeconds] + elapsed;
+    [[NSUserDefaults standardUserDefaults] setDouble:total forKey:kSCIScheduleUsageSecondsKey];
+}
+
+// MARK: - Availability
+
++ (BOOL)isUsageAllowed {
+    if (![self isScheduleEnabled]) return YES;
+    if (![self _isWithinWindowAtDate:[NSDate date]]) return NO;
+    return [self remainingSeconds] > 0;
+}
+
++ (NSTimeInterval)remainingSeconds {
+    if (![self isScheduleEnabled]) return INFINITY;
+
+    NSInteger limitMinutes = [self _limitMinutes];
+    if (limitMinutes <= 0) return INFINITY;
+
+    return MAX(0, limitMinutes * 60.0 - [self _storedUsageSeconds]);
+}
+
++ (BOOL)isFeatureNavigationAllowed:(NSString *)featureKey {
+    return ![self isBlockedForKey:featureKey];
+}
+
++ (BOOL)isMainAppSurfaceAllowed:(NSString *)tabStringFromSurfaceIntent {
+    NSString *featureKey = [self _featureKeyForSurfaceTabString:tabStringFromSurfaceIntent];
+    if (!featureKey) return YES;
+    return [self isFeatureNavigationAllowed:featureKey];
+}
+
++ (NSString *)unavailableReason {
+    if (![self isScheduleEnabled]) return @"";
+
+    NSString *start = [self formattedTimeFromMinutes:[self _startMinutes]];
+    NSString *end = [self formattedTimeFromMinutes:[self _endMinutes]];
+
+    if (![self _isWithinWindowAtDate:[NSDate date]]) {
+        return [NSString stringWithFormat:@"Available %@ – %@ each day", start, end];
+    }
+
+    NSTimeInterval remaining = [self remainingSeconds];
+    if (remaining <= 0) {
+        return [NSString stringWithFormat:@"Daily limit reached. Resets at %@", start];
+    }
+    if (isinf(remaining)) {
+        return [NSString stringWithFormat:@"Available until %@", end];
+    }
+
+    NSInteger mins = (NSInteger)ceil(remaining / 60.0);
+    return [NSString stringWithFormat:@"%ld min left today", (long)mins];
+}
+
+/// Seconds until the current window closes, or INFINITY for an all-day window.
++ (NSTimeInterval)_secondsUntilWindowClosesAtDate:(NSDate *)date {
+    NSInteger start = [self _startMinutes];
+    NSInteger end = [self _endMinutes];
+    if (start == end) return INFINITY;
+
+    NSDateComponents *c = [[NSCalendar currentCalendar] components:(NSCalendarUnitHour | NSCalendarUnitMinute | NSCalendarUnitSecond) fromDate:date];
+    NSTimeInterval now = c.hour * 3600.0 + c.minute * 60.0 + c.second;
+    NSTimeInterval close = end * 60.0;
+    if (close <= now) close += 24 * 3600.0;  // overnight window closes tomorrow
+    return close - now;
+}
+
+/// Whichever runs out first: the shared budget or the window. INFINITY when neither applies.
++ (NSTimeInterval)_effectiveRemainingSeconds {
+    if (![self isScheduleEnabled]) return INFINITY;
+    return MIN([self remainingSeconds], [self _secondsUntilWindowClosesAtDate:[NSDate date]]);
+}
+
+// MARK: - Time left pill
+
++ (NSString *)_formattedCountdown:(NSTimeInterval)seconds {
+    NSInteger total = (NSInteger)ceil(MAX(0, seconds));
+    NSInteger h = total / 3600, m = (total % 3600) / 60, sec = total % 60;
+    if (h > 0) return [NSString stringWithFormat:@"%ld:%02ld:%02ld left", (long)h, (long)m, (long)sec];
+    return [NSString stringWithFormat:@"%ld:%02ld left", (long)m, (long)sec];
+}
+
++ (nullable UIWindow *)_keyWindow {
+    for (UIWindow *window in [UIApplication sharedApplication].windows) {
+        if (window.isKeyWindow) return window;
+    }
+    return [UIApplication sharedApplication].windows.firstObject;
+}
+
++ (void)_createTimerPill {
+    UIVisualEffectView *pill = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterialDark]];
+    pill.layer.cornerRadius = 12;
+    // Mostly see-through so it never hides much of the content behind it.
+    pill.alpha = 0.7;
+    pill.layer.cornerCurve = kCACornerCurveContinuous;
+    pill.clipsToBounds = YES;
+    // Never intercept touches meant for Instagram underneath.
+    pill.userInteractionEnabled = NO;
+    pill.accessibilityIdentifier = @"sci-feature-limit-timer";
+
+    UILabel *label = [UILabel new];
+    label.font = [UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightSemibold];
+    label.textColor = [UIColor whiteColor];
+    label.textAlignment = NSTextAlignmentCenter;
+    [pill.contentView addSubview:label];
+
+    SCITimerPill = pill;
+    SCITimerLabel = label;
+}
+
++ (void)_hideTimerPill {
+    [SCITimerPill removeFromSuperview];
+}
+
+/// Shows, refreshes or hides the pill. Called on every usage tick and whenever tracking starts or stops.
++ (void)_updateTimerPill {
+    NSTimeInterval remaining = [self _effectiveRemainingSeconds];
+    BOOL visible = SCIActiveFeatureKeys.count && SCILastAccountedDate && !SCIIsForceClosing &&
+                   [SCIUtils getBoolPref:kSCIScheduleShowTimerKey] && !isinf(remaining);
+    UIWindow *window = visible ? [self _keyWindow] : nil;
+    if (!window) {
+        [self _hideTimerPill];
+        return;
+    }
+
+    if (!SCITimerPill) [self _createTimerPill];
+
+    SCITimerLabel.text = [NSString stringWithFormat:@"\u23F1 %@", [self _formattedCountdown:remaining]];
+    SCITimerLabel.textColor = remaining <= kSCIWarningSeconds ? [UIColor systemRedColor] : [UIColor whiteColor];
+
+    CGSize textSize = [SCITimerLabel sizeThatFits:CGSizeMake(CGFLOAT_MAX, CGFLOAT_MAX)];
+    CGFloat width = ceil(textSize.width) + 20, height = 24;
+    // Tuck up into the bottom of the status bar area, just under the Dynamic Island / notch.
+    CGFloat top = MAX(window.safeAreaInsets.top - 10, 4);
+    SCITimerPill.frame = CGRectMake(round((window.bounds.size.width - width) / 2), top, width, height);
+    SCITimerLabel.frame = SCITimerPill.bounds;
+
+    // Presented screens (story viewer, reels) are added above us; stay on top of them.
+    if (SCITimerPill.superview != window) [window addSubview:SCITimerPill];
+    else if (window.subviews.lastObject != SCITimerPill) [window bringSubviewToFront:SCITimerPill];
+}
+
+// MARK: - Usage tracking
+
++ (NSString *)_tokenForKey:(NSString *)featureKey owner:(id)owner {
+    return [NSString stringWithFormat:@"%@:%p", featureKey, owner];
+}
+
++ (void)beginUseForKey:(NSString *)featureKey owner:(id)owner {
+    if (![self isScheduleEnabledForKey:featureKey]) return;
+
+    [self _resetUsageIfWindowChanged];
+    if (![self isUsageAllowed]) return;
+
+    [self _flushActiveUsage];
+    [SCIActiveFeatureKeys addObject:[self _tokenForKey:featureKey owner:owner]];
+    if (!SCILastAccountedDate) SCILastAccountedDate = [NSDate date];
+
+    if (!SCIUsageTickTimer) {
+        SCIUsageTickTimer = [NSTimer timerWithTimeInterval:1.0 repeats:YES block:^(NSTimer * _Nonnull timer) {
+            [SCIFeatureSchedule _usageTick];
+        }];
+        [[NSRunLoop mainRunLoop] addTimer:SCIUsageTickTimer forMode:NSRunLoopCommonModes];
+    }
+    [self _updateTimerPill];
+}
+
++ (void)endUseForKey:(NSString *)featureKey owner:(id)owner {
+    NSString *token = [self _tokenForKey:featureKey owner:owner];
+    if (![SCIActiveFeatureKeys containsObject:token]) return;
+
+    [self _flushActiveUsage];
+    [SCIActiveFeatureKeys removeObject:token];
+
+    if (!SCIActiveFeatureKeys.count) {
+        SCILastAccountedDate = nil;
+        [SCIUsageTickTimer invalidate];
+        SCIUsageTickTimer = nil;
+    }
+    [self _updateTimerPill];
+}
+
++ (void)_endAllUse {
+    [self _flushActiveUsage];
+    [SCIActiveFeatureKeys removeAllObjects];
+    SCILastAccountedDate = nil;
+    [SCIUsageTickTimer invalidate];
+    SCIUsageTickTimer = nil;
+    [self _hideTimerPill];
+}
+
++ (void)_usageTick {
+    if (!SCIActiveFeatureKeys.count) return;
+
+    [self _flushActiveUsage];
+
+    if (![self isUsageAllowed]) {
+        // Budget exhausted or window closed while scrolling: shut the app down.
+        [self _forceCloseApp];
+        return;
+    }
+
+    [self _updateTimerPill];
+
+    NSTimeInterval remaining = [self remainingSeconds];
+    if (!SCIWarningShownForWindow && remaining <= kSCIWarningSeconds) {
+        SCIWarningShownForWindow = YES;
+        [SCIUtils showToastForDuration:3.0
+                                 title:@"1 minute left"
+                              subtitle:@"Instagram will close when your time is up"];
+    }
+}
+
+// MARK: - Force close
+
++ (void)_forceCloseApp {
+    if (SCIIsForceClosing) return;
+    SCIIsForceClosing = YES;
+
+    [self _endAllUse];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+
+    UIApplication *app = [UIApplication sharedApplication];
+
+    // Keep the process alive long enough to finish exiting after we leave the foreground.
+    __block UIBackgroundTaskIdentifier task = [app beginBackgroundTaskWithExpirationHandler:^{
+        exit(0);
+    }];
+    (void)task;
+
+    // Animate back to the home screen like a normal close, then terminate the process.
+    SEL suspendSel = NSSelectorFromString(@"suspend");
+    if ([app respondsToSelector:suspendSel]) {
+        ((void (*)(id, SEL))objc_msgSend)(app, suspendSel);
+    }
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        exit(0);
+    });
+}
+
+// MARK: - Tab enforcement
+
++ (void)_pollScheduleAvailability {
+    if (![self isScheduleEnabled]) {
+        if (SCILastUsageAllowed && !SCILastUsageAllowed.boolValue) {
+            SCILastUsageAllowed = @YES;
+            [self syncScheduleEnforcement];
+        }
+        return;
+    }
+
+    BOOL allowed = [self isUsageAllowed];
+    if (SCILastUsageAllowed && SCILastUsageAllowed.boolValue == allowed) return;
+    SCILastUsageAllowed = @(allowed);
+
+    if (!allowed && SCIActiveFeatureKeys.count) {
+        [self _forceCloseApp];
+        return;
+    }
+
+    [self syncScheduleEnforcement];
 }
 
 + (nullable id)_findTabBarControllerInViewController:(UIViewController *)viewController {
     if (!viewController) return nil;
 
-    Class tabBarClass = [self _tabBarControllerClass];
+    Class tabBarClass = NSClassFromString(@"IGTabBarController");
     if (tabBarClass && [viewController isKindOfClass:tabBarClass]) {
         return viewController;
     }
@@ -116,9 +479,7 @@ static NSTimer *SCISchedulePollTimer;
     }
 
     if (![surface respondsToSelector:@selector(tabStringFromSurfaceIntent)]) return nil;
-
-    NSString *tabString = [surface tabStringFromSurfaceIntent];
-    return [self _featureKeyForSurfaceTabString:tabString];
+    return [self _featureKeyForSurfaceTabString:[surface tabStringFromSurfaceIntent]];
 }
 
 + (void)_switchTabBarController:(id)tabBarController toFirstAllowedSurfaceAnimated:(BOOL)animated {
@@ -133,9 +494,7 @@ static NSTimer *SCISchedulePollTimer;
 
     for (id surface in surfaces) {
         if (![surface respondsToSelector:@selector(tabStringFromSurfaceIntent)]) continue;
-
-        NSString *tabString = [surface tabStringFromSurfaceIntent];
-        if (![self isMainAppSurfaceAllowed:tabString]) continue;
+        if (![self isMainAppSurfaceAllowed:[surface tabStringFromSurfaceIntent]]) continue;
 
         if ([tabBarController respondsToSelector:@selector(setSelectedTabBarSurface:animated:)]) {
             ((void (*)(id, SEL, id, BOOL))objc_msgSend)(tabBarController, @selector(setSelectedTabBarSurface:animated:), surface, animated);
@@ -161,24 +520,13 @@ static NSTimer *SCISchedulePollTimer;
 
 + (void)syncScheduleEnforcement {
     dispatch_async(dispatch_get_main_queue(), ^{
-        for (NSString *featureKey in @[ @"feed", @"reels", @"explore", @"messages" ]) {
-            if ([self isScheduleEnabledForKey:featureKey]) {
+        if ([self isScheduleEnabled]) {
+            for (NSString *featureKey in [self limitedFeatureKeys]) {
                 [self enforceLeavingFeatureIfActive:featureKey];
             }
         }
         [self notifyAvailabilityChanged];
     });
-}
-
-+ (BOOL)isFeatureNavigationAllowed:(NSString *)featureKey {
-    if (![self isScheduleEnabledForKey:featureKey]) return YES;
-    return [self isAvailableForKey:featureKey];
-}
-
-+ (BOOL)isMainAppSurfaceAllowed:(NSString *)tabStringFromSurfaceIntent {
-    NSString *featureKey = [self _featureKeyForSurfaceTabString:tabStringFromSurfaceIntent];
-    if (!featureKey) return YES;
-    return [self isFeatureNavigationAllowed:featureKey];
 }
 
 + (void)notifyAvailabilityChanged {
@@ -187,215 +535,25 @@ static NSTimer *SCISchedulePollTimer;
     });
 }
 
-+ (NSString *)_prefKey:(NSString *)feature suffix:(NSString *)suffix {
-    return [NSString stringWithFormat:@"schedule_%@_%@", feature, suffix];
-}
-
-+ (BOOL)isScheduleEnabledForKey:(NSString *)featureKey {
-    return [SCIUtils getBoolPref:[self _prefKey:featureKey suffix:@"enabled"]];
-}
-
-+ (NSInteger)_minutesForFeature:(NSString *)featureKey component:(NSString *)component {
-    return (NSInteger)[SCIUtils getDoublePref:[self _prefKey:featureKey suffix:component]];
-}
-
-+ (NSInteger)startMinutesForKey:(NSString *)featureKey {
-    NSInteger hour = [self _minutesForFeature:featureKey component:@"start_hour"];
-    NSInteger minute = [self _minutesForFeature:featureKey component:@"start_minute"];
-    return hour * 60 + minute;
-}
-
-+ (NSInteger)endMinutesForKey:(NSString *)featureKey {
-    NSInteger hour = [self _minutesForFeature:featureKey component:@"end_hour"];
-    NSInteger minute = [self _minutesForFeature:featureKey component:@"end_minute"];
-    return hour * 60 + minute;
-}
-
-+ (NSInteger)limitMinutesForKey:(NSString *)featureKey {
-    return (NSInteger)[SCIUtils getDoublePref:[self _prefKey:featureKey suffix:@"limit_minutes"]];
-}
-
-+ (NSString *)formattedTimeFromMinutes:(NSInteger)minutes {
-    minutes = ((minutes % (24 * 60)) + (24 * 60)) % (24 * 60);
-    return [NSString stringWithFormat:@"%02ld:%02ld", (long)(minutes / 60), (long)(minutes % 60)];
-}
-
-+ (NSInteger)_minutesSinceMidnightForDate:(NSDate *)date {
-    NSCalendar *cal = [NSCalendar currentCalendar];
-    NSDateComponents *c = [cal components:(NSCalendarUnitHour | NSCalendarUnitMinute) fromDate:date];
-    return c.hour * 60 + c.minute;
-}
-
-+ (BOOL)isWithinWindowForKey:(NSString *)featureKey atDate:(NSDate *)date {
-    NSInteger start = [self startMinutesForKey:featureKey];
-    NSInteger end = [self endMinutesForKey:featureKey];
-    NSInteger now = [self _minutesSinceMidnightForDate:date];
-
-    if (start == end) {
-        return YES;
-    }
-
-    if (start < end) {
-        return now >= start && now < end;
-    }
-
-    return now >= start || now < end;
-}
-
-+ (NSString *)_windowIdentifierForKey:(NSString *)featureKey atDate:(NSDate *)date {
-    NSCalendar *cal = [NSCalendar currentCalendar];
-    NSDateComponents *day = [cal components:NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay fromDate:date];
-    NSInteger start = [self startMinutesForKey:featureKey];
-    NSInteger now = [self _minutesSinceMidnightForDate:date];
-
-    if (start < [self endMinutesForKey:featureKey] || now >= start) {
-        return [NSString stringWithFormat:@"%04ld-%02ld-%02ld-%ld",
-                (long)day.year, (long)day.month, (long)day.day, (long)start];
-    }
-
-    NSDate *yesterday = [cal dateByAddingUnit:NSCalendarUnitDay value:-1 toDate:date options:0];
-    NSDateComponents *prevDay = [cal components:NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay fromDate:yesterday];
-    return [NSString stringWithFormat:@"%04ld-%02ld-%02ld-%ld",
-            (long)prevDay.year, (long)prevDay.month, (long)prevDay.day, (long)start];
-}
-
-+ (NSString *)_usageWindowDefaultsKey:(NSString *)featureKey {
-    return [self _prefKey:featureKey suffix:@"usage_window_id"];
-}
-
-+ (NSString *)_usageSecondsDefaultsKey:(NSString *)featureKey {
-    return [self _prefKey:featureKey suffix:@"usage_seconds"];
-}
-
-+ (void)_resetUsageIfWindowChangedForKey:(NSString *)featureKey {
-    NSString *current = [self _windowIdentifierForKey:featureKey atDate:[NSDate date]];
-    NSString *stored = [SCIUtils getStringPref:[self _usageWindowDefaultsKey:featureKey]];
-
-    if (![stored isEqualToString:current]) {
-        [[NSUserDefaults standardUserDefaults] setObject:current forKey:[self _usageWindowDefaultsKey:featureKey]];
-        [[NSUserDefaults standardUserDefaults] setDouble:0 forKey:[self _usageSecondsDefaultsKey:featureKey]];
-    }
-}
-
-+ (NSTimeInterval)_storedUsageSecondsForKey:(NSString *)featureKey {
-    [self _resetUsageIfWindowChangedForKey:featureKey];
-    return [SCIUtils getDoublePref:[self _usageSecondsDefaultsKey:featureKey]];
-}
-
-+ (void)_addUsageSeconds:(NSTimeInterval)seconds forKey:(NSString *)featureKey {
-    if (seconds <= 0) return;
-    [self _resetUsageIfWindowChangedForKey:featureKey];
-    NSTimeInterval total = [self _storedUsageSecondsForKey:featureKey] + seconds;
-    [[NSUserDefaults standardUserDefaults] setDouble:total forKey:[self _usageSecondsDefaultsKey:featureKey]];
-}
-
-+ (BOOL)isAvailableForKey:(NSString *)featureKey {
-    if (![self isScheduleEnabledForKey:featureKey]) return YES;
-    if (![self isWithinWindowForKey:featureKey atDate:[NSDate date]]) return NO;
-
-    NSInteger limitMinutes = [self limitMinutesForKey:featureKey];
-    if (limitMinutes <= 0) return YES;
-
-    NSTimeInterval limitSeconds = limitMinutes * 60.0;
-    return [self _storedUsageSecondsForKey:featureKey] < limitSeconds;
-}
-
-+ (NSTimeInterval)remainingSecondsForKey:(NSString *)featureKey {
-    if (![self isScheduleEnabledForKey:featureKey]) return INFINITY;
-
-    NSInteger limitMinutes = [self limitMinutesForKey:featureKey];
-    if (limitMinutes <= 0) return INFINITY;
-
-    NSTimeInterval limitSeconds = limitMinutes * 60.0;
-    return MAX(0, limitSeconds - [self _storedUsageSecondsForKey:featureKey]);
-}
-
-+ (NSString *)unavailableReasonForKey:(NSString *)featureKey {
-    if (![self isScheduleEnabledForKey:featureKey]) return @"";
-
-    if (![self isWithinWindowForKey:featureKey atDate:[NSDate date]]) {
-        NSInteger start = [self startMinutesForKey:featureKey];
-        NSInteger end = [self endMinutesForKey:featureKey];
-        return [NSString stringWithFormat:@"Available %@ – %@ each day",
-                [self formattedTimeFromMinutes:start],
-                [self formattedTimeFromMinutes:end]];
-    }
-
-    NSTimeInterval remaining = [self remainingSecondsForKey:featureKey];
-    if (remaining <= 0) {
-        NSInteger start = [self startMinutesForKey:featureKey];
-        return [NSString stringWithFormat:@"Daily limit reached. Resets at %@",
-                [self formattedTimeFromMinutes:start]];
-    }
-
-    NSInteger mins = (NSInteger)ceil(remaining / 60.0);
-    return [NSString stringWithFormat:@"%ld min remaining in this window", (long)mins];
-}
-
-+ (void)_sessionTickForKey:(NSString *)featureKey onBlocked:(void (^)(void))onBlocked {
-    if (!SCIActiveSessionStarts[featureKey]) return;
-
-    if (![self isAvailableForKey:featureKey]) {
-        [self endUseForKey:featureKey];
-        if (onBlocked) onBlocked();
-        return;
-    }
-
-    NSDate *start = SCIActiveSessionStarts[featureKey];
-    NSTimeInterval elapsed = [[NSDate date] timeIntervalSinceDate:start];
-    NSTimeInterval stored = [self _storedUsageSecondsForKey:featureKey];
-    NSInteger limitMinutes = [self limitMinutesForKey:featureKey];
-    if (limitMinutes > 0 && stored + elapsed >= limitMinutes * 60.0) {
-        [self _addUsageSeconds:elapsed forKey:featureKey];
-        SCIActiveSessionStarts[featureKey] = [NSDate date];
-        [self endUseForKey:featureKey];
-        if (onBlocked) onBlocked();
-    }
-}
-
-+ (void)beginUseForKey:(NSString *)featureKey onBlocked:(void (^)(void))onBlocked {
-    if (![self isScheduleEnabledForKey:featureKey]) return;
-
-    [self _resetUsageIfWindowChangedForKey:featureKey];
-
-    if (![self isAvailableForKey:featureKey]) {
-        if (onBlocked) onBlocked();
-        return;
-    }
-
-    [self endUseForKey:featureKey];
-
-    SCIActiveSessionStarts[featureKey] = [NSDate date];
-
-    __weak typeof(self) weakSelf = self;
-    NSTimer *timer = [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer * _Nonnull timer) {
-        [weakSelf _sessionTickForKey:featureKey onBlocked:onBlocked];
-    }];
-    SCIActiveSessionTimers[featureKey] = timer;
-}
-
-+ (void)endUseForKey:(NSString *)featureKey {
-    NSTimer *timer = SCIActiveSessionTimers[featureKey];
-    [timer invalidate];
-    [SCIActiveSessionTimers removeObjectForKey:featureKey];
-
-    NSDate *start = SCIActiveSessionStarts[featureKey];
-    [SCIActiveSessionStarts removeObjectForKey:featureKey];
-
-    if (!start) return;
-
-    NSTimeInterval elapsed = [[NSDate date] timeIntervalSinceDate:start];
-    [self _addUsageSeconds:elapsed forKey:featureKey];
-}
+// MARK: - App lifecycle
 
 + (void)_applicationDidEnterBackground:(NSNotification *)note {
-    NSArray *keys = [SCIActiveSessionStarts.allKeys copy];
-    for (NSString *key in keys) {
-        [self endUseForKey:key];
-    }
+    // Keep the active set so tracking resumes on foreground, but stop the clock while backgrounded.
+    [self _flushActiveUsage];
+    SCILastAccountedDate = nil;
+    [self _hideTimerPill];
+    [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
 + (void)_applicationWillEnterForeground:(NSNotification *)note {
+    if (SCIActiveFeatureKeys.count) {
+        if (![self isUsageAllowed]) {
+            [self _forceCloseApp];
+            return;
+        }
+        SCILastAccountedDate = [NSDate date];
+    }
+    [self _updateTimerPill];
     [self syncScheduleEnforcement];
 }
 

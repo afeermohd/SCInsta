@@ -38,7 +38,9 @@
                                                 [SCISetting switchCellWithTitle:@"Enable liquid glass buttons" subtitle:@"Enables experimental liquid glass buttons within the app" defaultsKey:@"liquid_glass_buttons" requiresRestart:YES],
                                                 [SCISetting switchCellWithTitle:@"Enable liquid glass surfaces" subtitle:@"Enables liquid glass for other elements, such as menus" defaultsKey:@"liquid_glass_surfaces" requiresRestart:YES],
                                                 [SCISetting switchCellWithTitle:@"Enable teen app icons" subtitle:@"When enabled, hold down on the Instagram logo to change the app icon" defaultsKey:@"teen_app_icons" requiresRestart:YES],
-                                                [SCISetting switchCellWithTitle:@"Suppress feature intro popups" subtitle:@"When on, skips Instagram Map and similar intros. When off, showing the Map intro once and dismissing it remembers forever." defaultsKey:@"suppress_feature_intros"]
+                                                [SCISetting switchCellWithTitle:@"Suppress feature intro popups" subtitle:@"When on, skips Instagram Map and similar intros. When off, showing the Map intro once and dismissing it remembers forever." defaultsKey:@"suppress_feature_intros"],
+                                                [SCISetting switchCellWithTitle:@"Skip call update prompt" subtitle:@"Hides Instagram's \"update to call\" prompt and starts the call anyway" defaultsKey:@"skip_call_update_prompt"],
+                                                [SCISetting switchCellWithTitle:@"Hide beta update screen" subtitle:@"Hides the \"It's time to update Instagram Beta\" screen on beta (TestFlight) builds" defaultsKey:@"hide_testflight_update_nag"]
                                             ]
                                         },
                                         @{
@@ -77,7 +79,7 @@
                                         }]
                 ],
                 [SCISetting navigationCellWithTitle:@"Feature limits"
-                                           subtitle:@"Daily time windows and usage caps"
+                                           subtitle:@"One window and one shared time limit"
                                                icon:[SCISymbol symbolWithName:@"clock.badge.checkmark"]
                                         navSections:[self featureScheduleSections]],
                 [SCISetting navigationCellWithTitle:@"Reels"
@@ -288,53 +290,64 @@
 
 // MARK: - Feature schedules
 
-+ (NSArray *)_scheduleRowsForFeature:(NSString *)featureKey title:(NSString *)title {
-    NSString *prefix = [NSString stringWithFormat:@"schedule_%@", featureKey];
-    return @[
-        [SCISetting switchCellWithTitle:[NSString stringWithFormat:@"Limit %@", title]
-                               subtitle:@"When enabled, this section is only usable inside the window below"
-                            defaultsKey:[prefix stringByAppendingString:@"_enabled"]],
-        [SCISetting stepperCellWithTitle:@"Window start (hour)"
-                                subtitle:@"Starts at %@:00 (24h)" defaultsKey:[prefix stringByAppendingString:@"_start_hour"]
-                                     min:0 max:23 step:1 label:@"h" singularLabel:@"h"],
-        [SCISetting stepperCellWithTitle:@"Window start (minute)"
-                                subtitle:@"Starts at :%@ past the hour" defaultsKey:[prefix stringByAppendingString:@"_start_minute"]
-                                     min:0 max:59 step:1 label:@"min" singularLabel:@"min"],
-        [SCISetting stepperCellWithTitle:@"Window end (hour)"
-                                subtitle:@"Ends at %@:00 (24h). End before start for overnight windows" defaultsKey:[prefix stringByAppendingString:@"_end_hour"]
-                                     min:0 max:23 step:1 label:@"h" singularLabel:@"h"],
-        [SCISetting stepperCellWithTitle:@"Window end (minute)"
-                                subtitle:@"Ends at :%@ past the hour" defaultsKey:[prefix stringByAppendingString:@"_end_minute"]
-                                     min:0 max:59 step:1 label:@"min" singularLabel:@"min"],
-        [SCISetting stepperCellWithTitle:@"Usage limit"
-                                subtitle:@"%@ %@ per window (0 = unlimited)" defaultsKey:[prefix stringByAppendingString:@"_limit_minutes"]
-                                     min:0 max:600 step:5 label:@"min" singularLabel:@"min"]
-    ];
-}
-
 + (NSArray *)featureScheduleSections {
     return @[
         @{
             @"header": @"",
             @"rows": @[
-                [SCISetting navigationCellWithTitle:@"Reels"
-                                           subtitle:@""
-                                               icon:[SCISymbol symbolWithName:@"film.stack"]
-                                        navSections:@[@{ @"header": @"", @"rows": [self _scheduleRowsForFeature:@"reels" title:@"reels"] }]],
-                [SCISetting navigationCellWithTitle:@"Feed"
-                                           subtitle:@""
-                                               icon:[SCISymbol symbolWithName:@"rectangle.stack"]
-                                        navSections:@[@{ @"header": @"", @"rows": [self _scheduleRowsForFeature:@"feed" title:@"feed"] }]],
-                [SCISetting navigationCellWithTitle:@"Explore"
-                                           subtitle:@""
-                                               icon:[SCISymbol symbolWithName:@"magnifyingglass"]
-                                        navSections:@[@{ @"header": @"", @"rows": [self _scheduleRowsForFeature:@"explore" title:@"explore"] }]],
-                [SCISetting navigationCellWithTitle:@"Messages"
-                                           subtitle:@""
-                                               icon:[SCISymbol symbolWithName:@"paperplane"]
-                                        navSections:@[@{ @"header": @"", @"rows": [self _scheduleRowsForFeature:@"messages" title:@"messages"] }]]
+                [SCISetting switchCellWithTitle:@"Enable limits"
+                                       subtitle:@"Selected sections are only usable inside the window below, up to the shared time limit"
+                                    defaultsKey:@"schedule_enabled"]
             ],
-            @"footer": @"When a limit applies, the matching tab is removed from the bottom navigation (like Hide reels tab). Usage is tracked only while that screen is open, pauses in the background, and resets when each window opens."
+            @"footer": @"Messages, search, camera and your profile are never limited."
+        },
+        @{
+            @"header": @"Limit these",
+            @"rows": @[
+                [SCISetting switchCellWithTitle:@"Feed posts"
+                                       subtitle:@"Out of time: the feed tab stays, but posts are removed"
+                                    defaultsKey:@"schedule_surface_feed_posts"],
+                [SCISetting switchCellWithTitle:@"Stories"
+                                       subtitle:@"Out of time: the stories tray at the top of the feed is removed"
+                                    defaultsKey:@"schedule_surface_stories"],
+                [SCISetting switchCellWithTitle:@"Reels"
+                                       subtitle:@"Out of time: the reels tab is hidden"
+                                    defaultsKey:@"schedule_surface_reels"],
+                [SCISetting switchCellWithTitle:@"Explore grid"
+                                       subtitle:@"Out of time: the explore grid is hidden. Search always works"
+                                    defaultsKey:@"schedule_surface_explore"]
+            ],
+            @"footer": @"Reels and posts shared in DMs always open, but can't be scrolled while you're out of time."
+        },
+        @{
+            @"header": @"Window",
+            @"rows": @[
+                [SCISetting stepperCellWithTitle:@"Start (hour)"
+                                        subtitle:@"Opens at %@:00 (24h)" defaultsKey:@"schedule_start_hour"
+                                             min:0 max:23 step:1 label:@"h" singularLabel:@"h"],
+                [SCISetting stepperCellWithTitle:@"Start (minute)"
+                                        subtitle:@"Opens at :%@ past the hour" defaultsKey:@"schedule_start_minute"
+                                             min:0 max:59 step:5 label:@"min" singularLabel:@"min"],
+                [SCISetting stepperCellWithTitle:@"End (hour)"
+                                        subtitle:@"Closes at %@:00 (24h). End before start for overnight windows" defaultsKey:@"schedule_end_hour"
+                                             min:0 max:23 step:1 label:@"h" singularLabel:@"h"],
+                [SCISetting stepperCellWithTitle:@"End (minute)"
+                                        subtitle:@"Closes at :%@ past the hour" defaultsKey:@"schedule_end_minute"
+                                             min:0 max:59 step:5 label:@"min" singularLabel:@"min"]
+            ],
+            @"footer": @"Same start and end means all day."
+        },
+        @{
+            @"header": @"Time limit",
+            @"rows": @[
+                [SCISetting stepperCellWithTitle:@"Total usage"
+                                        subtitle:@"%@ %@ per window, shared by everything above (0 = no cap)" defaultsKey:@"schedule_limit_minutes"
+                                             min:0 max:600 step:5 label:@"min" singularLabel:@"min"],
+                [SCISetting switchCellWithTitle:@"Show time left"
+                                       subtitle:@"A small countdown at the top of the screen while a limited section is open"
+                                    defaultsKey:@"schedule_show_timer"]
+            ],
+            @"footer": @"Time counts while a limited section is on screen and pauses in the background. When the time runs out, or the window closes, Instagram closes immediately. The counter resets each time the window opens."
         }
     ];
 }

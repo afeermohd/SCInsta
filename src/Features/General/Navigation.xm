@@ -51,20 +51,15 @@ static void SCISetTabBarButtonHidden(id tabBarController, NSString *key, BOOL hi
 }
 
 static void SCIApplyScheduleToTabBarButtons(id tabBarController) {
-    SCISetTabBarButtonHidden(tabBarController, @"_homeButton",
-                             ![SCIFeatureSchedule isFeatureNavigationAllowed:@"feed"]);
-    SCISetTabBarButtonHidden(tabBarController, @"_exploreButton",
-                             ![SCIFeatureSchedule isFeatureNavigationAllowed:@"explore"]);
+    // Feed and explore tabs always stay (camera, stories, search); only reels is hidden.
     SCISetTabBarButtonHidden(tabBarController, @"_discoverVideoButton",
-                             ![SCIFeatureSchedule isFeatureNavigationAllowed:@"reels"]);
-    SCISetTabBarButtonHidden(tabBarController, @"_directInboxButton",
-                             ![SCIFeatureSchedule isFeatureNavigationAllowed:@"messages"]);
+                             ![SCIFeatureSchedule isFeatureNavigationAllowed:SCIScheduleReelsKey]);
 }
 
 static void SCIShowFeatureBlockedToast(NSString *featureKey) {
     [SCIUtils showToastForDuration:3.0
                              title:[NSString stringWithFormat:@"%@ unavailable", [featureKey capitalizedString]]
-                          subtitle:[SCIFeatureSchedule unavailableReasonForKey:featureKey]];
+                          subtitle:[SCIFeatureSchedule unavailableReason]];
 }
 
 static BOOL SCIBlockTabBarAction(NSString *featureKey) {
@@ -121,23 +116,8 @@ static BOOL SCIBlockTabBarAction(NSString *featureKey) {
     return button;
 }
 
-- (void)_homeButtonPressed {
-    if (SCIBlockTabBarAction(@"feed")) return;
-    %orig;
-}
-
-- (void)_exploreButtonPressed {
-    if (SCIBlockTabBarAction(@"explore")) return;
-    %orig;
-}
-
 - (void)_discoverVideoButtonPressed {
-    if (SCIBlockTabBarAction(@"reels")) return;
-    %orig;
-}
-
-- (void)_directInboxButtonPressed {
-    if (SCIBlockTabBarAction(@"messages")) return;
+    if (SCIBlockTabBarAction(SCIScheduleReelsKey)) return;
     %orig;
 }
 
