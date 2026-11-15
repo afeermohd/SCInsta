@@ -4,6 +4,8 @@
 
 static NSString * const kSCIInstagramMapIntroCompletedKey = @"sci_instagram_map_intro_completed";
 static NSString * const kSCIInstagramMapIntroPromotionIDsKey = @"sci_instagram_map_intro_promotion_ids";
+static NSString * const kSCIInstantsIntroCompletedKey = @"sci_instants_intro_completed";
+static NSString * const kSCIInstantsIntroPromotionIDsKey = @"sci_instants_intro_promotion_ids";
 static const void *kSCIMapIntroSheetAssociatedKey = &kSCIMapIntroSheetAssociatedKey;
 static const void *kSCIMapIntroScanAssociatedKey = &kSCIMapIntroScanAssociatedKey;
 static const void *kSCIMapIntroDismissingAssociatedKey = &kSCIMapIntroDismissingAssociatedKey;
@@ -15,47 +17,82 @@ static const void *kSCIMapIntroPromoVisibleAssociatedKey = &kSCIMapIntroPromoVis
 - (void)secondaryActionTapped:(id)sender;
 @end
 
-static BOOL SCIViewControllerLooksLikeFeatureIntro(UIViewController *viewController);
-static BOOL SCITextLooksLikeFeatureIntro(NSString *text);
-static BOOL SCIIsInstagramMapIntroSheet(UIViewController *sheet);
+// Each intro is remembered separately: dismissing the Map intro must not hide the Instants one.
+typedef NS_ENUM(NSInteger, SCIIntroKind) {
+    SCIIntroKindNone = 0,
+    SCIIntroKindMap = 1,
+    SCIIntroKindInstants = 2,
+};
+
+static SCIIntroKind SCIViewControllerFeatureIntroKind(UIViewController *viewController);
+static SCIIntroKind SCIIntroKindForText(NSString *text);
+static SCIIntroKind SCIIntroSheetKind(UIViewController *sheet);
 
 static BOOL SCIShouldSuppressFeatureIntros(void) {
     return [SCIUtils getBoolPref:@"suppress_feature_intros"];
 }
 
-static BOOL SCIInstagramMapIntroMarkedCompleted(void) {
-    return [[NSUserDefaults standardUserDefaults] boolForKey:kSCIInstagramMapIntroCompletedKey];
+static NSString *SCIIntroCompletedKey(SCIIntroKind kind) {
+    switch (kind) {
+        case SCIIntroKindMap: return kSCIInstagramMapIntroCompletedKey;
+        case SCIIntroKindInstants: return kSCIInstantsIntroCompletedKey;
+        default: return nil;
+    }
 }
 
-static void SCIMarkInstagramMapIntroCompleted(void) {
+static NSString *SCIIntroPromotionIDsKey(SCIIntroKind kind) {
+    switch (kind) {
+        case SCIIntroKindMap: return kSCIInstagramMapIntroPromotionIDsKey;
+        case SCIIntroKindInstants: return kSCIInstantsIntroPromotionIDsKey;
+        default: return nil;
+    }
+}
+
+static BOOL SCIIntroMarkedCompleted(SCIIntroKind kind) {
+    NSString *key = SCIIntroCompletedKey(kind);
+    return key && [[NSUserDefaults standardUserDefaults] boolForKey:key];
+}
+
+static void SCIMarkIntroCompleted(SCIIntroKind kind) {
     // Do not write guessed Instagram keys or call back into the hooked NUX manager.
     // QP's original finish callback remains responsible for its own event datastore.
+    NSString *key = SCIIntroCompletedKey(kind);
+    if (!key) return;
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    if ([defaults boolForKey:kSCIInstagramMapIntroCompletedKey]) return;
-    [defaults setBool:YES forKey:kSCIInstagramMapIntroCompletedKey];
+    if ([defaults boolForKey:key]) return;
+    [defaults setBool:YES forKey:key];
     [defaults synchronize];
 }
 
-static void SCINoteMapIntroSheet(id sheet) {
-    if (!sheet) return;
-    objc_setAssociatedObject(sheet, kSCIMapIntroSheetAssociatedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+static void SCINoteIntroSheet(id sheet, SCIIntroKind kind) {
+    if (!sheet || kind == SCIIntroKindNone) return;
+    objc_setAssociatedObject(sheet, kSCIMapIntroSheetAssociatedKey, @(kind), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-static BOOL SCIMapIntroSheetWasNoted(id sheet) {
-    if (!sheet) return NO;
-    return [objc_getAssociatedObject(sheet, kSCIMapIntroSheetAssociatedKey) boolValue];
+static SCIIntroKind SCINotedIntroKind(id sheet) {
+    if (!sheet) return SCIIntroKindNone;
+    return (SCIIntroKind)[objc_getAssociatedObject(sheet, kSCIMapIntroSheetAssociatedKey) integerValue];
 }
 
-/// Skip map intro when user opted out, already dismissed once, or toggle is on (never show).
-static BOOL SCIShouldSkipInstagramMapIntro(void) {
-    return SCIShouldSuppressFeatureIntros() || SCIInstagramMapIntroMarkedCompleted();
+/// Skip an intro when the toggle is on (never show) or the user already dismissed it once.
+static BOOL SCIShouldSkipIntro(SCIIntroKind kind) {
+    if (kind == SCIIntroKindNone) return NO;
+    return SCIShouldSuppressFeatureIntros() || SCIIntroMarkedCompleted(kind);
 }
 
-static BOOL SCIKeyLooksLikeMapIntroNUX(id key) {
-    if (![key isKindOfClass:[NSString class]]) return NO;
+/// Cheap gate before inspecting a dialog or sheet: could any intro be skipped right now?
+static BOOL SCIShouldSkipAnyIntro(void) {
+    return SCIShouldSkipIntro(SCIIntroKindMap) || SCIShouldSkipIntro(SCIIntroKindInstants);
+}
+
+static SCIIntroKind SCIIntroKindForNUXKey(id key) {
+    if (![key isKindOfClass:[NSString class]]) return SCIIntroKindNone;
     NSString *lower = [(NSString *)key lowercaseString];
-    return [lower containsString:@"friends_map"] || [lower containsString:@"instagram_map"] ||
-           ([lower containsString:@"map"] && [lower containsString:@"nux"]);
+    if ([lower containsString:@"friends_map"] || [lower containsString:@"instagram_map"] ||
+        ([lower containsString:@"map"] && [lower containsString:@"nux"])) return SCIIntroKindMap;
+    if (([lower containsString:@"quicksnap"] || [lower containsString:@"quick_snap"] || [lower containsString:@"instants"]) &&
+        ([lower containsString:@"nux"] || [lower containsString:@"intro"] || [lower containsString:@"try"])) return SCIIntroKindInstants;
+    return SCIIntroKindNone;
 }
 
 static NSString *SCICollectVisibleTextInView(UIView *view, NSUInteger depth) {
@@ -87,14 +124,18 @@ static NSString *SCICollectVisibleTextInView(UIView *view, NSUInteger depth) {
     return [parts componentsJoinedByString:@" "];
 }
 
-static BOOL SCIClassNameSignalsFeatureIntro(NSString *name) {
-    if (!name.length) return NO;
+static SCIIntroKind SCIIntroKindForClassName(NSString *name) {
+    if (!name.length) return SCIIntroKindNone;
     NSString *lower = name.lowercaseString;
+    BOOL isIntro = [lower containsString:@"nux"] || [lower containsString:@"intro"] ||
+                   [lower containsString:@"onboarding"] || [lower containsString:@"education"];
+    if (!isIntro) return SCIIntroKindNone;
     BOOL isMap = [lower containsString:@"friendsmap"] || [lower containsString:@"friends_map"] ||
                  [lower containsString:@"instagrammap"] || [lower containsString:@"instagram_map"] ||
                  [lower containsString:@"mapnux"] || [lower containsString:@"map_nux"];
-    return isMap && ([lower containsString:@"nux"] || [lower containsString:@"intro"] ||
-                     [lower containsString:@"onboarding"] || [lower containsString:@"education"]);
+    if (isMap) return SCIIntroKindMap;
+    if ([lower containsString:@"quicksnap"] || [lower containsString:@"instants"]) return SCIIntroKindInstants;
+    return SCIIntroKindNone;
 }
 
 static UIViewController *SCIRepresentativeContentViewController(UIViewController *viewController) {
@@ -121,12 +162,17 @@ static UIViewController *SCIRepresentativeContentViewController(UIViewController
     return viewController;
 }
 
-static BOOL SCITextLooksLikeFeatureIntro(NSString *text) {
-    if (!text.length) return NO;
+static SCIIntroKind SCIIntroKindForText(NSString *text) {
+    if (!text.length) return SCIIntroKindNone;
     NSString *lower = text.lowercaseString;
     lower = [lower stringByReplacingOccurrencesOfString:@"\\s+" withString:@" " options:NSRegularExpressionSearch range:NSMakeRange(0, lower.length)];
     BOOL isMap = [lower containsString:@"instagram map"] || [lower containsString:@"friends map"];
-    return isMap && ([lower containsString:@"introducing"] || [lower containsString:@"discover"]);
+    if (isMap && ([lower containsString:@"introducing"] || [lower containsString:@"discover"])) return SCIIntroKindMap;
+    // Promotional copy only; Instants settings and viewer screens never use these phrases.
+    if ([lower containsString:@"instant"] &&
+        [lower rangeOfString:@"introducing instants|try instants|meet instants|discover instants|new: instants|instants app|try the instants"
+                     options:NSRegularExpressionSearch].location != NSNotFound) return SCIIntroKindInstants;
+    return SCIIntroKindNone;
 }
 
 static id SCIIntroValueForKey(id object, NSString *key) {
@@ -138,29 +184,30 @@ static id SCIIntroValueForKey(id object, NSString *key) {
     return nil;
 }
 
-static BOOL SCIIsInstagramMapIntroPromoDialog(id dialog) {
+static SCIIntroKind SCIPromoDialogIntroKind(id dialog) {
     id title = SCIIntroValueForKey(dialog, @"title");
     if ([title isKindOfClass:[NSAttributedString class]]) title = [title string];
     // The promo's title is available before its labels or presentation exist.
-    return [title isKindOfClass:[NSString class]] && SCITextLooksLikeFeatureIntro(title);
+    return [title isKindOfClass:[NSString class]] ? SCIIntroKindForText(title) : SCIIntroKindNone;
 }
 
-static BOOL SCIHandleMapIntroPromoDialogBeforeShow(id dialog) {
-    if (!SCIIsInstagramMapIntroPromoDialog(dialog)) {
+static BOOL SCIHandleIntroPromoDialogBeforeShow(id dialog) {
+    SCIIntroKind kind = SCIPromoDialogIntroKind(dialog);
+    if (kind == SCIIntroKindNone) {
         // The same dialog object may be configured for a different promotion later.
         objc_setAssociatedObject(dialog, kSCIMapIntroSheetAssociatedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(dialog, kSCIMapIntroDismissingAssociatedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         return NO;
     }
-    SCINoteMapIntroSheet(dialog);
-    if (!SCIShouldSkipInstagramMapIntro()) return NO;
+    SCINoteIntroSheet(dialog, kind);
+    if (!SCIShouldSkipIntro(kind)) return NO;
     if ([objc_getAssociatedObject(dialog, kSCIMapIntroDismissingAssociatedKey) boolValue]) return YES;
     objc_setAssociatedObject(dialog, kSCIMapIntroDismissingAssociatedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     // Route through the configured native "Not now" action/delegate, not a
     // fabricated QP event. Never remove the card or its dimming ourselves.
     @try {
         [(SCIMapPromoDialogView *)dialog secondaryActionTapped:nil];
-        SCIMarkInstagramMapIntroCompleted();
+        SCIMarkIntroCompleted(kind);
     } @finally {
         // A skipped, never-attached dialog may be reused for another attempt.
         // Retain the guard only while a visible card is finishing dismissal.
@@ -171,7 +218,7 @@ static BOOL SCIHandleMapIntroPromoDialogBeforeShow(id dialog) {
     return YES;
 }
 
-static id SCIMapIntroPromoDialogFromAlertController(id root, Class promoDialogClass) {
+static id SCIIntroPromoDialogFromAlertController(id root, Class promoDialogClass) {
     if (![root isKindOfClass:NSClassFromString(@"IGCustomAlertViewController")]) return nil;
     // Verified object ivar in 418.2.0; do not load a VC's view to identify it.
     Ivar alertViewIvar = class_getInstanceVariable([root class], "_alertView");
@@ -181,33 +228,35 @@ static id SCIMapIntroPromoDialogFromAlertController(id root, Class promoDialogCl
     return [alertView isKindOfClass:promoDialogClass] ? alertView : nil;
 }
 
-static id SCIMapIntroPromoDialogFromPopover(id popover, Class promoDialogClass) {
+static id SCIIntroPromoDialogFromPopover(id popover, Class promoDialogClass) {
     id navigation = SCIIntroValueForKey(popover, @"navigationController");
-    return SCIMapIntroPromoDialogFromAlertController(SCIIntroValueForKey(navigation, @"topViewController"), promoDialogClass);
+    return SCIIntroPromoDialogFromAlertController(SCIIntroValueForKey(navigation, @"topViewController"), promoDialogClass);
 }
 
-static id SCIMapIntroPromoDialogFromPresentation(id controller, Class promoDialogClass) {
+static id SCIIntroPromoDialogFromPresentation(id controller, Class promoDialogClass) {
     // Only verified native alert hosts. Do not inspect arbitrary VC/view trees or
-    // treat a generic Bloks/partial-sheet wrapper as a Map promotion.
+    // treat a generic Bloks/partial-sheet wrapper as a promotion.
     if ([controller isKindOfClass:NSClassFromString(@"IGPopoverController")]) {
-        return SCIMapIntroPromoDialogFromPopover(controller, promoDialogClass);
+        return SCIIntroPromoDialogFromPopover(controller, promoDialogClass);
     }
     if ([controller isKindOfClass:NSClassFromString(@"IGPopoverNavigationController")]) {
-        return SCIMapIntroPromoDialogFromAlertController(SCIIntroValueForKey(controller, @"topViewController"), promoDialogClass);
+        return SCIIntroPromoDialogFromAlertController(SCIIntroValueForKey(controller, @"topViewController"), promoDialogClass);
     }
-    return SCIMapIntroPromoDialogFromAlertController(controller, promoDialogClass);
+    return SCIIntroPromoDialogFromAlertController(controller, promoDialogClass);
 }
 
-static BOOL SCIHandleNativeMapIntroPresentation(id controller, Class promoDialogClass) {
-    if (!SCIShouldSkipInstagramMapIntro()) return NO;
-    id dialog = SCIMapIntroPromoDialogFromPresentation(controller, promoDialogClass);
-    return dialog && SCIHandleMapIntroPromoDialogBeforeShow(dialog);
+static BOOL SCIHandleNativeIntroPresentation(id controller, Class promoDialogClass) {
+    if (!SCIShouldSkipAnyIntro()) return NO;
+    id dialog = SCIIntroPromoDialogFromPresentation(controller, promoDialogClass);
+    return dialog && SCIHandleIntroPromoDialogBeforeShow(dialog);
 }
 
-static void SCIScanMapIntroPromoDialog(UIView *dialog) {
-    if (!dialog.window || !SCIIsInstagramMapIntroPromoDialog(dialog)) return;
-    SCINoteMapIntroSheet(dialog);
-    if (!SCIShouldSkipInstagramMapIntro()) return;
+static void SCIScanIntroPromoDialog(UIView *dialog) {
+    if (!dialog.window) return;
+    SCIIntroKind kind = SCIPromoDialogIntroKind(dialog);
+    if (kind == SCIIntroKindNone) return;
+    SCINoteIntroSheet(dialog, kind);
+    if (!SCIShouldSkipIntro(kind)) return;
     __weak UIView *weakDialog = dialog;
     dispatch_async(dispatch_get_main_queue(), ^{
         UIView *currentDialog = weakDialog;
@@ -219,121 +268,135 @@ static void SCIScanMapIntroPromoDialog(UIView *dialog) {
             }
             break;
         }
-        SCIHandleMapIntroPromoDialogBeforeShow(currentDialog);
+        SCIHandleIntroPromoDialogBeforeShow(currentDialog);
     });
 }
 
-static void SCIWatchMapIntroPromoDialog(UIView *dialog) {
+static void SCIWatchIntroPromoDialog(UIView *dialog) {
     NSObject *generation = [NSObject new];
     objc_setAssociatedObject(dialog, kSCIMapIntroScanAssociatedKey, generation, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    SCIScanMapIntroPromoDialog(dialog);
+    SCIScanIntroPromoDialog(dialog);
     __weak UIView *weakDialog = dialog;
     for (NSNumber *delay in @[ @0.25, @0.5, @1.0, @1.5, @2.0 ]) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             UIView *currentDialog = weakDialog;
             if (currentDialog && objc_getAssociatedObject(currentDialog, kSCIMapIntroScanAssociatedKey) == generation) {
-                SCIScanMapIntroPromoDialog(currentDialog);
+                SCIScanIntroPromoDialog(currentDialog);
             }
         });
     }
 }
 
-static BOOL SCIMapIntroMetadataMatches(id value, NSUInteger depth, NSUInteger *budget) {
-    if (!value || depth > 6 || *budget == 0) return NO;
+static SCIIntroKind SCIIntroMetadataKind(id value, NSUInteger depth, NSUInteger *budget) {
+    if (!value || depth > 6 || *budget == 0) return SCIIntroKindNone;
     --*budget;
     if ([value isKindOfClass:[NSString class]]) {
-        return SCITextLooksLikeFeatureIntro(value) || SCIClassNameSignalsFeatureIntro(value);
+        SCIIntroKind kind = SCIIntroKindForText(value);
+        return kind != SCIIntroKindNone ? kind : SCIIntroKindForClassName(value);
     }
     id title = SCIIntroValueForKey(value, @"title");
     id content = SCIIntroValueForKey(value, @"content");
-    if ([title isKindOfClass:[NSString class]] && [content isKindOfClass:[NSString class]] &&
-        SCITextLooksLikeFeatureIntro([NSString stringWithFormat:@"%@ %@", title, content])) return YES;
+    if ([title isKindOfClass:[NSString class]] && [content isKindOfClass:[NSString class]]) {
+        SCIIntroKind kind = SCIIntroKindForText([NSString stringWithFormat:@"%@ %@", title, content]);
+        if (kind != SCIIntroKindNone) return kind;
+    }
     if ([value isKindOfClass:[NSDictionary class]]) {
         for (id key in value) {
-            if (SCIMapIntroMetadataMatches(key, depth + 1, budget) ||
-                SCIMapIntroMetadataMatches(value[key], depth + 1, budget)) return YES;
+            SCIIntroKind kind = SCIIntroMetadataKind(key, depth + 1, budget);
+            if (kind == SCIIntroKindNone) kind = SCIIntroMetadataKind(value[key], depth + 1, budget);
+            if (kind != SCIIntroKindNone) return kind;
             if (*budget == 0) break;
         }
     } else if ([value isKindOfClass:[NSArray class]]) {
         for (id item in value) {
-            if (SCIMapIntroMetadataMatches(item, depth + 1, budget)) return YES;
+            SCIIntroKind kind = SCIIntroMetadataKind(item, depth + 1, budget);
+            if (kind != SCIIntroKindNone) return kind;
             if (*budget == 0) break;
         }
     } else {
         // IGQPPromotion -> IGQPCreative -> Bloks payload. No arbitrary description/KVC walk.
         for (NSString *key in @[ @"qpCreative", @"title", @"content", @"bloksData" ]) {
-            if (SCIMapIntroMetadataMatches(SCIIntroValueForKey(value, key), depth + 1, budget)) return YES;
+            SCIIntroKind kind = SCIIntroMetadataKind(SCIIntroValueForKey(value, key), depth + 1, budget);
+            if (kind != SCIIntroKindNone) return kind;
         }
     }
-    return NO;
+    return SCIIntroKindNone;
 }
 
-static BOOL SCIIsInstagramMapIntroPromotion(id promotion) {
-    if (!promotion) return NO;
+static SCIIntroKind SCIPromotionIntroKind(id promotion) {
+    if (!promotion) return SCIIntroKindNone;
     id promotionID = SCIIntroValueForKey(promotion, @"promotionID");
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    NSArray *knownIDs = [defaults stringArrayForKey:kSCIInstagramMapIntroPromotionIDsKey] ?: @[];
-    if ([promotionID isKindOfClass:[NSString class]] && [knownIDs containsObject:promotionID]) return YES;
+    if ([promotionID isKindOfClass:[NSString class]]) {
+        for (NSNumber *known in @[ @(SCIIntroKindMap), @(SCIIntroKindInstants) ]) {
+            SCIIntroKind kind = (SCIIntroKind)known.integerValue;
+            if ([[defaults stringArrayForKey:SCIIntroPromotionIDsKey(kind)] containsObject:promotionID]) return kind;
+        }
+    }
 
     NSUInteger budget = 256;
-    if (!SCIMapIntroMetadataMatches(promotion, 0, &budget)) return NO;
+    SCIIntroKind kind = SCIIntroMetadataKind(promotion, 0, &budget);
+    if (kind == SCIIntroKindNone) return kind;
     if ([promotionID isKindOfClass:[NSString class]] && [promotionID length]) {
-        [defaults setObject:[knownIDs arrayByAddingObject:promotionID] forKey:kSCIInstagramMapIntroPromotionIDsKey];
+        NSString *idsKey = SCIIntroPromotionIDsKey(kind);
+        NSArray *knownIDs = [defaults stringArrayForKey:idsKey] ?: @[];
+        [defaults setObject:[knownIDs arrayByAddingObject:promotionID] forKey:idsKey];
         [defaults synchronize];
     }
-    return YES;
+    return kind;
 }
 
-static BOOL SCIViewControllerLooksLikeFeatureIntro(UIViewController *viewController) {
-    if (!viewController) return NO;
+static SCIIntroKind SCIViewControllerFeatureIntroKind(UIViewController *viewController) {
+    if (!viewController) return SCIIntroKindNone;
 
     if ([viewController isKindOfClass:[UIAlertController class]]) {
         UIAlertController *alert = (UIAlertController *)viewController;
         NSString *blob = [NSString stringWithFormat:@"%@ %@", alert.title ?: @"", alert.message ?: @""];
-        if (SCITextLooksLikeFeatureIntro(blob)) return YES;
+        SCIIntroKind kind = SCIIntroKindForText(blob);
+        if (kind != SCIIntroKindNone) return kind;
     }
 
-    if (viewController.title.length && SCITextLooksLikeFeatureIntro(viewController.title)) {
-        return YES;
+    if (viewController.title.length) {
+        SCIIntroKind kind = SCIIntroKindForText(viewController.title);
+        if (kind != SCIIntroKindNone) return kind;
     }
 
-    if (SCITextLooksLikeFeatureIntro(SCICollectVisibleTextInView(viewController.viewIfLoaded, 0))) {
-        return YES;
-    }
-
-    return NO;
+    return SCIIntroKindForText(SCICollectVisibleTextInView(viewController.viewIfLoaded, 0));
 }
 
-static BOOL SCIViewControllerTreeLooksLikeFeatureIntro(UIViewController *viewController, NSUInteger depth) {
-    if (!viewController || depth > 6) return NO;
+static SCIIntroKind SCIViewControllerTreeIntroKind(UIViewController *viewController, NSUInteger depth) {
+    if (!viewController || depth > 6) return SCIIntroKindNone;
 
-    NSString *className = NSStringFromClass([viewController class]);
-    if (SCIClassNameSignalsFeatureIntro(className)) return YES;
+    SCIIntroKind kind = SCIIntroKindForClassName(NSStringFromClass([viewController class]));
+    if (kind != SCIIntroKindNone) return kind;
 
-    if (SCIViewControllerLooksLikeFeatureIntro(viewController)) return YES;
+    kind = SCIViewControllerFeatureIntroKind(viewController);
+    if (kind != SCIIntroKindNone) return kind;
 
     UIViewController *content = SCIRepresentativeContentViewController(viewController);
-    if (content != viewController && SCIViewControllerTreeLooksLikeFeatureIntro(content, depth + 1)) {
-        return YES;
+    if (content != viewController) {
+        kind = SCIViewControllerTreeIntroKind(content, depth + 1);
+        if (kind != SCIIntroKindNone) return kind;
     }
 
     for (UIViewController *child in viewController.childViewControllers) {
-        if (SCIViewControllerTreeLooksLikeFeatureIntro(child, depth + 1)) {
-            return YES;
-        }
+        kind = SCIViewControllerTreeIntroKind(child, depth + 1);
+        if (kind != SCIIntroKindNone) return kind;
     }
 
-    return NO;
+    return SCIIntroKindNone;
 }
 
-static BOOL SCIIsInstagramMapIntroSheet(UIViewController *sheet) {
-    if (!sheet) return NO;
-    return SCIViewControllerTreeLooksLikeFeatureIntro(sheet, 0);
+static SCIIntroKind SCIIntroSheetKind(UIViewController *sheet) {
+    if (!sheet) return SCIIntroKindNone;
+    return SCIViewControllerTreeIntroKind(sheet, 0);
 }
 
-static void SCIDismissInstagramMapIntroSheet(UIViewController *sheet) {
+static void SCIDismissIntroSheet(UIViewController *sheet) {
     if (!sheet) return;
-    if (!SCIIsInstagramMapIntroSheet(sheet) && !SCIMapIntroSheetWasNoted(sheet)) return;
+    SCIIntroKind kind = SCINotedIntroKind(sheet);
+    if (kind == SCIIntroKindNone) kind = SCIIntroSheetKind(sheet);
+    if (kind == SCIIntroKindNone) return;
     if ([objc_getAssociatedObject(sheet, kSCIMapIntroDismissingAssociatedKey) boolValue]) return;
 
     // A navigation/content wrapper may not itself own the modal presentation.
@@ -343,65 +406,67 @@ static void SCIDismissInstagramMapIntroSheet(UIViewController *sheet) {
     if ([objc_getAssociatedObject(owner, kSCIMapIntroDismissingAssociatedKey) boolValue]) return;
     // Never dismiss a different sheet that has since been placed above this one.
     if (owner.presentedViewController) return;
-    SCINoteMapIntroSheet(sheet);
+    SCINoteIntroSheet(sheet, kind);
     objc_setAssociatedObject(sheet, kSCIMapIntroDismissingAssociatedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(owner, kSCIMapIntroDismissingAssociatedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     [owner dismissViewControllerAnimated:NO completion:^{
-        SCIMarkInstagramMapIntroCompleted();
+        SCIMarkIntroCompleted(kind);
         objc_setAssociatedObject(sheet, kSCIMapIntroDismissingAssociatedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(owner, kSCIMapIntroDismissingAssociatedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }];
 }
 
-static void SCIScanPartialModalForMapIntro(UIViewController *sheet) {
+static void SCIScanPartialModalForIntro(UIViewController *sheet) {
     if (!sheet.viewIfLoaded.window) return;
-    if (!SCIMapIntroSheetWasNoted(sheet) && SCIIsInstagramMapIntroSheet(sheet)) {
-        SCINoteMapIntroSheet(sheet);
+    if (SCINotedIntroKind(sheet) == SCIIntroKindNone) {
+        SCINoteIntroSheet(sheet, SCIIntroSheetKind(sheet));
     }
-    if (SCIMapIntroSheetWasNoted(sheet) && SCIShouldSkipInstagramMapIntro()) {
+    if (SCIShouldSkipIntro(SCINotedIntroKind(sheet))) {
         // Run outside layout/appearance callbacks, after UIKit finishes presentation.
         __weak UIViewController *weakSheet = sheet;
         dispatch_async(dispatch_get_main_queue(), ^{
             UIViewController *currentSheet = weakSheet;
-            if (currentSheet.viewIfLoaded.window && SCIShouldSkipInstagramMapIntro()) {
-                SCIDismissInstagramMapIntroSheet(currentSheet);
+            if (currentSheet.viewIfLoaded.window && SCIShouldSkipIntro(SCINotedIntroKind(currentSheet))) {
+                SCIDismissIntroSheet(currentSheet);
             }
         });
     }
 }
 
-static void SCIWatchPartialModalForMapIntro(UIViewController *sheet) {
+static void SCIWatchPartialModalForIntro(UIViewController *sheet) {
     // Sheet controllers can be reused for unrelated DM content.
     objc_setAssociatedObject(sheet, kSCIMapIntroSheetAssociatedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     NSObject *generation = [NSObject new];
     objc_setAssociatedObject(sheet, kSCIMapIntroScanAssociatedKey, generation, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    SCIScanPartialModalForMapIntro(sheet);
+    SCIScanPartialModalForIntro(sheet);
     __weak UIViewController *weakSheet = sheet;
     // Bloks often supplies its copy after the initial presentation/layout.
     for (NSNumber *delay in @[ @0.25, @0.5, @1.0, @1.5, @2.0 ]) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             UIViewController *currentSheet = weakSheet;
             if (currentSheet && objc_getAssociatedObject(currentSheet, kSCIMapIntroScanAssociatedKey) == generation) {
-                SCIScanPartialModalForMapIntro(currentSheet);
+                SCIScanPartialModalForIntro(currentSheet);
             }
         });
     }
 }
 
-static void SCIWillDisappearMapIntroSheet(UIViewController *sheet) {
+static void SCIWillDisappearIntroSheet(UIViewController *sheet) {
     // Capture copy before Bloks tears down its labels, even for an early user close.
-    if (SCIIsInstagramMapIntroSheet(sheet)) SCINoteMapIntroSheet(sheet);
+    SCIIntroKind detected = SCIIntroSheetKind(sheet);
+    if (detected != SCIIntroKindNone) SCINoteIntroSheet(sheet, detected);
+    SCIIntroKind kind = SCINotedIntroKind(sheet);
     for (UIViewController *owner = sheet; owner; owner = owner.parentViewController) {
         if (owner.isBeingDismissed || owner.isMovingFromParentViewController) {
-            if (SCIMapIntroSheetWasNoted(sheet)) {
+            if (kind != SCIIntroKindNone) {
                 id<UIViewControllerTransitionCoordinator> transition = owner.transitionCoordinator;
                 if (transition) {
                     // A cancelled interactive swipe is not a completed dismissal.
                     [transition animateAlongsideTransition:nil completion:^(id<UIViewControllerTransitionCoordinatorContext> context) {
-                        if (!context.isCancelled) SCIMarkInstagramMapIntroCompleted();
+                        if (!context.isCancelled) SCIMarkIntroCompleted(kind);
                     }];
                 } else {
-                    SCIMarkInstagramMapIntroCompleted();
+                    SCIMarkIntroCompleted(kind);
                 }
             }
             break;
@@ -409,11 +474,11 @@ static void SCIWillDisappearMapIntroSheet(UIViewController *sheet) {
     }
 }
 
-static void SCIDidDisappearMapIntroSheet(UIViewController *sheet) {
+static void SCIDidDisappearIntroSheet(UIViewController *sheet) {
     objc_setAssociatedObject(sheet, kSCIMapIntroScanAssociatedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     // Being covered by another VC is not a user dismissal.
-    if (!sheet.presentingViewController && !sheet.parentViewController && SCIMapIntroSheetWasNoted(sheet)) {
-        SCIMarkInstagramMapIntroCompleted();
+    if (!sheet.presentingViewController && !sheet.parentViewController) {
+        SCIMarkIntroCompleted(SCINotedIntroKind(sheet));
     }
 }
 
@@ -475,22 +540,20 @@ static void SCIDidDisappearMapIntroSheet(UIViewController *sheet) {
 }
 
 - (_Bool)nuxWithKeyIsCompleted:(id)key {
-    if (SCIInstagramMapIntroMarkedCompleted() && SCIKeyLooksLikeMapIntroNUX(key)) return YES;
+    if (SCIIntroMarkedCompleted(SCIIntroKindForNUXKey(key))) return YES;
     if (SCIShouldSuppressFeatureIntros()) return YES;
     return %orig;
 }
 
 - (_Bool)canShowNUXBasedOnLastTimestampForKey:(id)key {
-    if (SCIShouldSkipInstagramMapIntro() && SCIKeyLooksLikeMapIntroNUX(key)) return NO;
+    if (SCIShouldSkipIntro(SCIIntroKindForNUXKey(key))) return NO;
     if (SCIShouldSuppressFeatureIntros()) return NO;
     return %orig;
 }
 
 - (void)markNuxAsCompletedWithKey:(id)key {
     %orig;
-    if (SCIKeyLooksLikeMapIntroNUX(key)) {
-        SCIMarkInstagramMapIntroCompleted();
-    }
+    SCIMarkIntroCompleted(SCIIntroKindForNUXKey(key));
 }
 
 %end
@@ -501,7 +564,7 @@ static void SCIDidDisappearMapIntroSheet(UIViewController *sheet) {
 %hook IGQPEligibilityChecker
 
 - (_Bool)_promotionIsEligible:(id)promotion triggerID:(id)trigger surfaceID:(id)surface triggerContext:(id)context additionalEligibilityBlock:(id)block debugInfo:(id *)debugInfo {
-    if (SCIShouldSkipInstagramMapIntro() && SCIIsInstagramMapIntroPromotion(promotion)) return NO;
+    if (SCIShouldSkipAnyIntro() && SCIShouldSkipIntro(SCIPromotionIntroKind(promotion))) return NO;
     return %orig;
 }
 
@@ -513,9 +576,9 @@ static void SCIDidDisappearMapIntroSheet(UIViewController *sheet) {
 
 - (void)qpPresenter:(id)presenter finishedWithEvent:(id)event {
     // Capture before %orig clears currentPromotion. Let Instagram record the real event.
-    BOOL isMapIntro = SCIIsInstagramMapIntroPromotion(SCIIntroValueForKey(presenter, @"currentPromotion"));
+    SCIIntroKind kind = SCIPromotionIntroKind(SCIIntroValueForKey(presenter, @"currentPromotion"));
     %orig;
-    if (isMapIntro) SCIMarkInstagramMapIntroCompleted();
+    SCIMarkIntroCompleted(kind);
 }
 
 %end
@@ -526,9 +589,9 @@ static void SCIDidDisappearMapIntroSheet(UIViewController *sheet) {
 
 - (void)dismissCurrentPromotion {
     // Some presenters clear their promotion before notifying the coordinator.
-    BOOL isMapIntro = SCIIsInstagramMapIntroPromotion(SCIIntroValueForKey(self, @"currentPromotion"));
+    SCIIntroKind kind = SCIPromotionIntroKind(SCIIntroValueForKey(self, @"currentPromotion"));
     %orig;
-    if (isMapIntro) SCIMarkInstagramMapIntroCompleted();
+    SCIMarkIntroCompleted(kind);
 }
 
 %end
@@ -538,24 +601,24 @@ static void SCIDidDisappearMapIntroSheet(UIViewController *sheet) {
 %hook SCIMapPromoDialogView
 
 - (void)secondaryActionTapped:(id)sender {
-    BOOL isMapIntro = SCIIsInstagramMapIntroPromoDialog(self);
-    if (isMapIntro) {
-        SCINoteMapIntroSheet(self);
+    SCIIntroKind kind = SCIPromoDialogIntroKind(self);
+    if (kind != SCIIntroKindNone) {
+        SCINoteIntroSheet(self, kind);
         objc_setAssociatedObject(self, kSCIMapIntroDismissingAssociatedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     %orig;
-    if (isMapIntro) SCIMarkInstagramMapIntroCompleted();
+    SCIMarkIntroCompleted(kind);
 }
 
 - (void)primaryActionTapped:(id)sender {
-    BOOL isMapIntro = SCIIsInstagramMapIntroPromoDialog(self);
-    if (isMapIntro) objc_setAssociatedObject(self, kSCIMapIntroDismissingAssociatedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    SCIIntroKind kind = SCIPromoDialogIntroKind(self);
+    if (kind != SCIIntroKindNone) objc_setAssociatedObject(self, kSCIMapIntroDismissingAssociatedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     %orig;
-    if (isMapIntro) SCIMarkInstagramMapIntroCompleted();
+    SCIMarkIntroCompleted(kind);
 }
 
 - (void)dismissAlertView:(id)sender {
-    if (SCIIsInstagramMapIntroPromoDialog(self)) SCINoteMapIntroSheet(self);
+    SCINoteIntroSheet(self, SCIPromoDialogIntroKind(self));
     %orig;
     // This is a backdrop gesture handler and may ignore taps inside the card.
     // Only removal from its window below confirms an actual outside dismissal.
@@ -571,11 +634,11 @@ static void SCIDidDisappearMapIntroSheet(UIViewController *sheet) {
             objc_setAssociatedObject(self, kSCIMapIntroDismissingAssociatedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
         objc_setAssociatedObject(self, kSCIMapIntroPromoVisibleAssociatedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        SCIWatchMapIntroPromoDialog(self);
+        SCIWatchIntroPromoDialog(dialogView);
     } else {
         objc_setAssociatedObject(self, kSCIMapIntroScanAssociatedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        if ([objc_getAssociatedObject(self, kSCIMapIntroPromoVisibleAssociatedKey) boolValue] && SCIMapIntroSheetWasNoted(self)) {
-            SCIMarkInstagramMapIntroCompleted();
+        if ([objc_getAssociatedObject(self, kSCIMapIntroPromoVisibleAssociatedKey) boolValue]) {
+            SCIMarkIntroCompleted(SCINotedIntroKind(self));
         }
         objc_setAssociatedObject(self, kSCIMapIntroPromoVisibleAssociatedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
@@ -583,7 +646,7 @@ static void SCIDidDisappearMapIntroSheet(UIViewController *sheet) {
 
 - (void)layoutSubviews {
     %orig;
-    SCIScanMapIntroPromoDialog(self);
+    SCIScanIntroPromoDialog((UIView *)self);
 }
 
 %end
@@ -593,10 +656,10 @@ static void SCIDidDisappearMapIntroSheet(UIViewController *sheet) {
 %hook IGPopoverController
 
 - (void)present {
-    id dialog = SCIMapIntroPromoDialogFromPopover(self, NSClassFromString(@"_TtC15IGDSPromoDialog19IGDSPromoDialogView"));
+    id dialog = SCIIntroPromoDialogFromPopover(self, NSClassFromString(@"_TtC15IGDSPromoDialog19IGDSPromoDialogView"));
     // This is the native card presenter, before it creates any backdrop. Unlike
     // Swift show thunks, this ObjC entry also covers Swift-to-Swift dialog calls.
-    if (dialog && SCIHandleMapIntroPromoDialogBeforeShow(dialog)) return;
+    if (dialog && SCIHandleIntroPromoDialogBeforeShow(dialog)) return;
     %orig;
 }
 
@@ -609,7 +672,7 @@ static void SCIDidDisappearMapIntroSheet(UIViewController *sheet) {
 - (void)presentViewController:(UIViewController *)controller animated:(BOOL)animated completion:(void (^)(void))completion {
     // IGPopoverController's fullscreen/direct-call entry points bypass its
     // ObjC -present hook, but converge here before UIKit attaches any backdrop.
-    if (SCIHandleNativeMapIntroPresentation(controller, NSClassFromString(@"_TtC15IGDSPromoDialog19IGDSPromoDialogView"))) {
+    if (SCIHandleNativeIntroPresentation(controller, NSClassFromString(@"_TtC15IGDSPromoDialog19IGDSPromoDialogView"))) {
         // This is a cancellation via native Not now, not a successful UIKit
         // presentation. Do not run its success completion after cancelling it.
         return;
@@ -624,22 +687,22 @@ static void SCIDidDisappearMapIntroSheet(UIViewController *sheet) {
 
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
-    SCIWatchPartialModalForMapIntro(self);
+    SCIWatchPartialModalForIntro(self);
 }
 
 - (void)viewDidLayoutSubviews {
     %orig;
-    SCIScanPartialModalForMapIntro(self);
+    SCIScanPartialModalForIntro(self);
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
-    SCIWillDisappearMapIntroSheet(self);
+    SCIWillDisappearIntroSheet(self);
     %orig;
 }
 
 - (void)viewDidDisappear:(BOOL)animated {
     %orig;
-    SCIDidDisappearMapIntroSheet(self);
+    SCIDidDisappearIntroSheet(self);
 }
 
 %end
@@ -648,39 +711,47 @@ static void SCIDidDisappearMapIntroSheet(UIViewController *sheet) {
 
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
-    SCIWatchPartialModalForMapIntro(self);
+    SCIWatchPartialModalForIntro(self);
 }
 
 - (void)viewDidLayoutSubviews {
     %orig;
-    SCIScanPartialModalForMapIntro(self);
+    SCIScanPartialModalForIntro(self);
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
-    SCIWillDisappearMapIntroSheet(self);
+    SCIWillDisappearIntroSheet(self);
     %orig;
 }
 
 - (void)viewDidDisappear:(BOOL)animated {
     %orig;
-    SCIDidDisappearMapIntroSheet(self);
+    SCIDidDisappearIntroSheet(self);
 }
 
 %end
 
-%hook IGDirectNotesTrayRowCell
+// Instagram 455 moved the notes tray row into Swift; %ctor binds whichever class exists.
+@interface SCIIntroNotesTrayRowCell : UIView
+- (id)listAdapterObjects;
+@end
+
+%group SCIMapIntroNotesTray
+%hook SCIIntroNotesTrayRowCell
 - (id)listAdapterObjects {
-    NSArray *originalObjs = %orig();
-    if (!SCIShouldSkipInstagramMapIntro()) return originalObjs;
+    NSArray *originalObjs = %orig;
+    if (!SCIShouldSkipIntro(SCIIntroKindMap) || ![originalObjs isKindOfClass:[NSArray class]]) return originalObjs;
 
     NSMutableArray *filteredObjs = [NSMutableArray arrayWithCapacity:[originalObjs count]];
 
     for (id obj in originalObjs) {
         BOOL shouldHide = NO;
 
-        if ([obj isKindOfClass:%c(IGDirectNotesTrayUserViewModel)]) {
-            if ([[obj valueForKey:@"notePk"] isEqualToString:@"friends_map"]) {
-                shouldHide = YES;
+        if ([obj isKindOfClass:objc_getClass("IGDirectNotesTrayUserViewModel")]) {
+            @try {
+                id notePk = [obj valueForKey:@"notePk"];
+                shouldHide = [notePk isKindOfClass:[NSString class]] && [notePk isEqualToString:@"friends_map"];
+            } @catch (__unused NSException *exception) {
             }
         }
 
@@ -691,6 +762,7 @@ static void SCIDidDisappearMapIntroSheet(UIViewController *sheet) {
 
     return [filteredObjs copy];
 }
+%end
 %end
 
 static BOOL SCIIntroMethodHasSignature(Class cls, SEL selector, const char *returnType, NSArray<NSString *> *argumentTypes) {
@@ -730,5 +802,10 @@ static BOOL SCIIntroMethodHasSignature(Class cls, SEL selector, const char *retu
     }
     if (SCIIntroMethodHasSignature(NSClassFromString(@"IGQPBasePresenter"), NSSelectorFromString(@"dismissCurrentPromotion"), @encode(void), @[])) {
         %init(SCIMapIntroQPDismissal);
+    }
+    Class notesTrayRowClass = objc_getClass("IGDirectNotesTrayRowCell")
+        ?: objc_getClass("_TtC24IGDirectNotesTrayUISwift24IGDirectNotesTrayRowCell");
+    if (SCIIntroMethodHasSignature(notesTrayRowClass, @selector(listAdapterObjects), @encode(id), @[])) {
+        %init(SCIMapIntroNotesTray, SCIIntroNotesTrayRowCell = notesTrayRowClass);
     }
 }

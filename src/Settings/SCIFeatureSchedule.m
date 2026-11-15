@@ -18,6 +18,7 @@ static NSString *const kSCIScheduleEndMinuteKey    = @"schedule_end_minute";
 static NSString *const kSCIScheduleLimitMinutesKey = @"schedule_limit_minutes";
 static NSString *const kSCIScheduleUsageWindowKey  = @"schedule_usage_window_id";
 static NSString *const kSCIScheduleUsageSecondsKey = @"schedule_usage_seconds";
+static NSString *const kSCIScheduleShowTimerKey    = @"schedule_show_timer";
 
 // Seconds before the budget runs out at which a heads-up toast is shown.
 static const NSTimeInterval kSCIWarningSeconds = 60.0;
@@ -31,6 +32,10 @@ static NSTimer *SCISchedulePollTimer;
 static NSNumber *SCILastUsageAllowed;
 static BOOL SCIWarningShownForWindow;
 static BOOL SCIIsForceClosing;
+
+// Floating "time left" pill shown while a limited surface is on screen.
+static UIView *SCITimerPill;
+static UILabel *SCITimerLabel;
 
 @implementation SCIFeatureSchedule
 
@@ -223,6 +228,94 @@ static BOOL SCIIsForceClosing;
     return [NSString stringWithFormat:@"%ld min left today", (long)mins];
 }
 
+/// Seconds until the current window closes, or INFINITY for an all-day window.
++ (NSTimeInterval)_secondsUntilWindowClosesAtDate:(NSDate *)date {
+    NSInteger start = [self _startMinutes];
+    NSInteger end = [self _endMinutes];
+    if (start == end) return INFINITY;
+
+    NSDateComponents *c = [[NSCalendar currentCalendar] components:(NSCalendarUnitHour | NSCalendarUnitMinute | NSCalendarUnitSecond) fromDate:date];
+    NSTimeInterval now = c.hour * 3600.0 + c.minute * 60.0 + c.second;
+    NSTimeInterval close = end * 60.0;
+    if (close <= now) close += 24 * 3600.0;  // overnight window closes tomorrow
+    return close - now;
+}
+
+/// Whichever runs out first: the shared budget or the window. INFINITY when neither applies.
++ (NSTimeInterval)_effectiveRemainingSeconds {
+    if (![self isScheduleEnabled]) return INFINITY;
+    return MIN([self remainingSeconds], [self _secondsUntilWindowClosesAtDate:[NSDate date]]);
+}
+
+// MARK: - Time left pill
+
++ (NSString *)_formattedCountdown:(NSTimeInterval)seconds {
+    NSInteger total = (NSInteger)ceil(MAX(0, seconds));
+    NSInteger h = total / 3600, m = (total % 3600) / 60, sec = total % 60;
+    if (h > 0) return [NSString stringWithFormat:@"%ld:%02ld:%02ld left", (long)h, (long)m, (long)sec];
+    return [NSString stringWithFormat:@"%ld:%02ld left", (long)m, (long)sec];
+}
+
++ (nullable UIWindow *)_keyWindow {
+    for (UIWindow *window in [UIApplication sharedApplication].windows) {
+        if (window.isKeyWindow) return window;
+    }
+    return [UIApplication sharedApplication].windows.firstObject;
+}
+
++ (void)_createTimerPill {
+    UIVisualEffectView *pill = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterialDark]];
+    pill.layer.cornerRadius = 12;
+    // Mostly see-through so it never hides much of the content behind it.
+    pill.alpha = 0.7;
+    pill.layer.cornerCurve = kCACornerCurveContinuous;
+    pill.clipsToBounds = YES;
+    // Never intercept touches meant for Instagram underneath.
+    pill.userInteractionEnabled = NO;
+    pill.accessibilityIdentifier = @"sci-feature-limit-timer";
+
+    UILabel *label = [UILabel new];
+    label.font = [UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightSemibold];
+    label.textColor = [UIColor whiteColor];
+    label.textAlignment = NSTextAlignmentCenter;
+    [pill.contentView addSubview:label];
+
+    SCITimerPill = pill;
+    SCITimerLabel = label;
+}
+
++ (void)_hideTimerPill {
+    [SCITimerPill removeFromSuperview];
+}
+
+/// Shows, refreshes or hides the pill. Called on every usage tick and whenever tracking starts or stops.
++ (void)_updateTimerPill {
+    NSTimeInterval remaining = [self _effectiveRemainingSeconds];
+    BOOL visible = SCIActiveFeatureKeys.count && SCILastAccountedDate && !SCIIsForceClosing &&
+                   [SCIUtils getBoolPref:kSCIScheduleShowTimerKey] && !isinf(remaining);
+    UIWindow *window = visible ? [self _keyWindow] : nil;
+    if (!window) {
+        [self _hideTimerPill];
+        return;
+    }
+
+    if (!SCITimerPill) [self _createTimerPill];
+
+    SCITimerLabel.text = [NSString stringWithFormat:@"\u23F1 %@", [self _formattedCountdown:remaining]];
+    SCITimerLabel.textColor = remaining <= kSCIWarningSeconds ? [UIColor systemRedColor] : [UIColor whiteColor];
+
+    CGSize textSize = [SCITimerLabel sizeThatFits:CGSizeMake(CGFLOAT_MAX, CGFLOAT_MAX)];
+    CGFloat width = ceil(textSize.width) + 20, height = 24;
+    // Tuck up into the bottom of the status bar area, just under the Dynamic Island / notch.
+    CGFloat top = MAX(window.safeAreaInsets.top - 10, 4);
+    SCITimerPill.frame = CGRectMake(round((window.bounds.size.width - width) / 2), top, width, height);
+    SCITimerLabel.frame = SCITimerPill.bounds;
+
+    // Presented screens (story viewer, reels) are added above us; stay on top of them.
+    if (SCITimerPill.superview != window) [window addSubview:SCITimerPill];
+    else if (window.subviews.lastObject != SCITimerPill) [window bringSubviewToFront:SCITimerPill];
+}
+
 // MARK: - Usage tracking
 
 + (NSString *)_tokenForKey:(NSString *)featureKey owner:(id)owner {
@@ -245,6 +338,7 @@ static BOOL SCIIsForceClosing;
         }];
         [[NSRunLoop mainRunLoop] addTimer:SCIUsageTickTimer forMode:NSRunLoopCommonModes];
     }
+    [self _updateTimerPill];
 }
 
 + (void)endUseForKey:(NSString *)featureKey owner:(id)owner {
@@ -259,6 +353,7 @@ static BOOL SCIIsForceClosing;
         [SCIUsageTickTimer invalidate];
         SCIUsageTickTimer = nil;
     }
+    [self _updateTimerPill];
 }
 
 + (void)_endAllUse {
@@ -267,6 +362,7 @@ static BOOL SCIIsForceClosing;
     SCILastAccountedDate = nil;
     [SCIUsageTickTimer invalidate];
     SCIUsageTickTimer = nil;
+    [self _hideTimerPill];
 }
 
 + (void)_usageTick {
@@ -279,6 +375,8 @@ static BOOL SCIIsForceClosing;
         [self _forceCloseApp];
         return;
     }
+
+    [self _updateTimerPill];
 
     NSTimeInterval remaining = [self remainingSeconds];
     if (!SCIWarningShownForWindow && remaining <= kSCIWarningSeconds) {
@@ -443,6 +541,7 @@ static BOOL SCIIsForceClosing;
     // Keep the active set so tracking resumes on foreground, but stop the clock while backgrounded.
     [self _flushActiveUsage];
     SCILastAccountedDate = nil;
+    [self _hideTimerPill];
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
@@ -454,6 +553,7 @@ static BOOL SCIIsForceClosing;
         }
         SCILastAccountedDate = [NSDate date];
     }
+    [self _updateTimerPill];
     [self syncScheduleEnforcement];
 }
 
