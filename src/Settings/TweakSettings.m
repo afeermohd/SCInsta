@@ -342,7 +342,10 @@
             @"rows": @[
                 [SCISetting stepperCellWithTitle:@"Total usage"
                                         subtitle:@"%@ %@ per window, shared by everything above (0 = no cap)" defaultsKey:@"schedule_limit_minutes"
-                                             min:0 max:600 step:5 label:@"min" singularLabel:@"min"]
+                                             min:0 max:600 step:5 label:@"min" singularLabel:@"min"],
+                [SCISetting switchCellWithTitle:@"Show time left"
+                                       subtitle:@"A small countdown at the top of the screen while a limited section is open"
+                                    defaultsKey:@"schedule_show_timer"]
             ],
             @"footer": @"Time counts while a limited section is on screen and pauses in the background. When the time runs out, or the window closes, Instagram closes immediately. The counter resets each time the window opens."
         }

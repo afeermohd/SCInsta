@@ -54,7 +54,8 @@ BOOL dmVisualMsgsViewedButtonEnabled = false;
         @"schedule_surface_feed_posts": @(YES),
         @"schedule_surface_stories": @(YES),
         @"schedule_surface_reels": @(YES),
-        @"schedule_surface_explore": @(YES)
+        @"schedule_surface_explore": @(YES),
+        @"schedule_show_timer": @(YES)
     };
     [[NSUserDefaults standardUserDefaults] registerDefaults:sciDefaults];
     
