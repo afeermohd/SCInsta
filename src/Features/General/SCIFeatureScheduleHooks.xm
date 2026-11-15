@@ -115,6 +115,29 @@ static void SCIApplyExploreGridVisibility(id gridController) {
 }
 %end
 
+// Instagram 455+: Swift home feed controller
+%hook _TtC15IGMainFeedSwift30IGMainFeedViewController_swift
+- (void)viewDidLoad {
+    %orig;
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(sci_scheduleAvailabilityChanged:)
+                                                 name:SCIFeatureScheduleAvailabilityChangedNotification
+                                               object:nil];
+}
+%new
+- (void)sci_scheduleAvailabilityChanged:(NSNotification *)notification {
+    SCIReloadListAdapterOfViewController(self);
+}
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    [SCIFeatureSchedule beginUseForKey:SCIScheduleFeedPostsKey owner:self];
+}
+- (void)viewDidDisappear:(BOOL)animated {
+    [SCIFeatureSchedule endUseForKey:SCIScheduleFeedPostsKey owner:self];
+    %orig;
+}
+%end
+
 // MARK: - Stories viewer
 
 %hook IGStoryViewerViewController
@@ -168,6 +191,29 @@ static void SCIApplyExploreGridVisibility(id gridController) {
 %end
 
 %hook IGVideoFeedViewController
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    SCIApplyPostViewerScrollLock(self);
+}
+- (void)viewDidLayoutSubviews {
+    %orig;
+    SCIApplyPostViewerScrollLock(self);
+}
+%end
+
+// Instagram 455+: Swift post viewers
+%hook _TtC30IGContextualFeedViewController30IGContextualFeedViewController
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    SCIApplyPostViewerScrollLock(self);
+}
+- (void)viewDidLayoutSubviews {
+    %orig;
+    SCIApplyPostViewerScrollLock(self);
+}
+%end
+
+%hook _TtC18IGPostChainingFeed28IGChainingFeedViewController
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
     SCIApplyPostViewerScrollLock(self);

@@ -1,7 +1,11 @@
 #import "../../InstagramHeaders.h"
+#import <objc/runtime.h>
 #import "../../Settings/SCISettingsViewController.h"
 
-// Show SCInsta tweak settings by holding on the settings/more icon under profile for ~1 second
+// Show SCInsta tweak settings by holding on the settings/more icon under profile for ~1 second.
+// Instagram 455 moved IGBadgedNavigationButton into Swift (IGProfileNavigation module); %ctor binds
+// whichever class exists.
+%group SCIProfileMoreButton
 %hook IGBadgedNavigationButton
 - (void)didMoveToWindow {
     %orig;
@@ -28,6 +32,7 @@
 
     [SCIUtils showSettingsVC:[self window]];
 }
+%end
 %end
 
 // Quick access to tweak settings by holding on home tab button
@@ -56,3 +61,13 @@
     [SCIUtils showSettingsVC:[self window]];
 }
 %end
+
+%ctor {
+    %init;
+
+    Class badgedButtonClass = objc_getClass("IGBadgedNavigationButton")
+        ?: objc_getClass("_TtC19IGProfileNavigation24IGBadgedNavigationButton");
+    if (badgedButtonClass) {
+        %init(SCIProfileMoreButton, IGBadgedNavigationButton = badgedButtonClass);
+    }
+}
