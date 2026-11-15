@@ -499,6 +499,18 @@
 @property (readonly, nonatomic) IGCreationActionBarButton *button;
 @end
 
+@interface IGDirectRealtimeIrisDelta : NSObject
+@end
+
+@interface IGDirectRealtimeIrisDeltaPayload : NSObject
+@end
+
+@interface IGDirectRealtimeIrisThreadDeltaPayload : NSObject
+@end
+
+@interface IGDirectRealtimeIrisThreadDelta : NSObject
+@end
+
 
 
 /////////////////////////////////////////////////////////////////////////////
