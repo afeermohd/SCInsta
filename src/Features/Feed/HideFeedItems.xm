@@ -1,8 +1,33 @@
 #import "../../Utils.h"
 #import "../../InstagramHeaders.h"
+#import "../../Settings/SCIFeatureSchedule.h"
+
+// Feed content removed when feed posts are out of time (feature limits). Stories tray is handled separately.
+static BOOL SCIIsFeedPostContent(id obj) {
+    static NSArray<Class> *classes;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSMutableArray *list = [NSMutableArray array];
+        for (NSString *name in @[ @"IGMedia", @"IGFeedItem", @"IGPostCreationManager", @"IGEndOfFeedDemarcatorModel",
+                                  @"IGSpinnerLabelViewModel", @"IGFeedScrollableClipsModel", @"IGInFeedStoriesTrayModel",
+                                  @"IGHScrollAYMFModel", @"IGBloksFeedUnitModel", @"IGFeedGroupHeaderViewModel",
+                                  @"IGThreadsInFeedModels.IGThreadsInFeedModel" ]) {
+            Class cls = objc_getClass(name.UTF8String);
+            if (cls) [list addObject:cls];
+        }
+        classes = [list copy];
+    });
+
+    for (Class cls in classes) {
+        if ([obj isKindOfClass:cls]) return YES;
+    }
+    return NO;
+}
 
 static NSArray *removeItemsInList(NSArray *list, BOOL isFeed) {
     NSArray *originalObjs = list;
+    BOOL feedPostsBlocked = isFeed && [SCIFeatureSchedule isBlockedForKey:SCIScheduleFeedPostsKey];
+    BOOL storiesBlocked = isFeed && [SCIFeatureSchedule isBlockedForKey:SCIScheduleStoriesKey];
     NSMutableArray *filteredObjs = [NSMutableArray arrayWithCapacity:[originalObjs count]];
 
     for (id obj in originalObjs) {
@@ -77,12 +102,17 @@ static NSArray *removeItemsInList(NSArray *list, BOOL isFeed) {
         }        
 
         // Remove story tray
-        if (isFeed && [SCIUtils getBoolPref:@"hide_stories_tray"]) {
+        if (isFeed && ([SCIUtils getBoolPref:@"hide_stories_tray"] || storiesBlocked)) {
             if ([obj isKindOfClass:%c(IGStoryDataController)]) {
                 NSLog(@"[SCInsta] Hiding stories tray");
 
                 continue;
             }
+        }
+
+        // Feed posts out of time (feature limits)
+        if (feedPostsBlocked && SCIIsFeedPostContent(obj)) {
+            continue;
         }
 
         // Hide entire feed
