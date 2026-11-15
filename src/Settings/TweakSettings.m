@@ -39,7 +39,8 @@
                                                 [SCISetting switchCellWithTitle:@"Enable liquid glass surfaces" subtitle:@"Enables liquid glass for other elements, such as menus" defaultsKey:@"liquid_glass_surfaces" requiresRestart:YES],
                                                 [SCISetting switchCellWithTitle:@"Enable teen app icons" subtitle:@"When enabled, hold down on the Instagram logo to change the app icon" defaultsKey:@"teen_app_icons" requiresRestart:YES],
                                                 [SCISetting switchCellWithTitle:@"Suppress feature intro popups" subtitle:@"When on, skips Instagram Map and similar intros. When off, showing the Map intro once and dismissing it remembers forever." defaultsKey:@"suppress_feature_intros"],
-                                                [SCISetting switchCellWithTitle:@"Skip call update prompt" subtitle:@"Hides Instagram's \"update to call\" prompt and starts the call anyway" defaultsKey:@"skip_call_update_prompt"]
+                                                [SCISetting switchCellWithTitle:@"Skip call update prompt" subtitle:@"Hides Instagram's \"update to call\" prompt and starts the call anyway" defaultsKey:@"skip_call_update_prompt"],
+                                                [SCISetting switchCellWithTitle:@"Hide beta update screen" subtitle:@"Hides the \"It's time to update Instagram Beta\" screen on beta (TestFlight) builds" defaultsKey:@"hide_testflight_update_nag"]
                                             ]
                                         },
                                         @{

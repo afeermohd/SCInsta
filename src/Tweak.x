@@ -44,6 +44,7 @@ BOOL dmVisualMsgsViewedButtonEnabled = false;
         @"doom_scrolling_reel_count": @(1),
         @"suppress_feature_intros": @(YES),
         @"skip_call_update_prompt": @(YES),
+        @"hide_testflight_update_nag": @(YES),
         @"schedule_enabled": @(NO),
         @"schedule_start_hour": @(18),
         @"schedule_start_minute": @(0),
