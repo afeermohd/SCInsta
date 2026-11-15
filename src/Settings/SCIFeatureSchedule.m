@@ -264,8 +264,10 @@ static UILabel *SCITimerLabel;
 }
 
 + (void)_createTimerPill {
-    UIVisualEffectView *pill = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterialDark]];
-    pill.layer.cornerRadius = 14;
+    UIVisualEffectView *pill = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterialDark]];
+    pill.layer.cornerRadius = 12;
+    // Mostly see-through so it never hides much of the content behind it.
+    pill.alpha = 0.7;
     pill.layer.cornerCurve = kCACornerCurveContinuous;
     pill.clipsToBounds = YES;
     // Never intercept touches meant for Instagram underneath.
@@ -273,7 +275,7 @@ static UILabel *SCITimerLabel;
     pill.accessibilityIdentifier = @"sci-feature-limit-timer";
 
     UILabel *label = [UILabel new];
-    label.font = [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightSemibold];
+    label.font = [UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightSemibold];
     label.textColor = [UIColor whiteColor];
     label.textAlignment = NSTextAlignmentCenter;
     [pill.contentView addSubview:label];
@@ -303,8 +305,9 @@ static UILabel *SCITimerLabel;
     SCITimerLabel.textColor = remaining <= kSCIWarningSeconds ? [UIColor systemRedColor] : [UIColor whiteColor];
 
     CGSize textSize = [SCITimerLabel sizeThatFits:CGSizeMake(CGFLOAT_MAX, CGFLOAT_MAX)];
-    CGFloat width = ceil(textSize.width) + 24, height = 28;
-    CGFloat top = window.safeAreaInsets.top + 4;
+    CGFloat width = ceil(textSize.width) + 20, height = 24;
+    // Tuck up into the bottom of the status bar area, just under the Dynamic Island / notch.
+    CGFloat top = MAX(window.safeAreaInsets.top - 10, 4);
     SCITimerPill.frame = CGRectMake(round((window.bounds.size.width - width) / 2), top, width, height);
     SCITimerLabel.frame = SCITimerPill.bounds;
 
