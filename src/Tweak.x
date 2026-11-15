@@ -1,4 +1,5 @@
 #import <substrate.h>
+#import <objc/runtime.h>
 #import "InstagramHeaders.h"
 #import "Tweak.h"
 #import "Utils.h"
@@ -360,7 +361,23 @@ shouldPersistLastBugReportId:(id)arg6
 %end
 
 // Direct suggested chats (inbox view)
-%hook IGDirectInboxListAdapterDataSource
+// Instagram 455 moved the inbox data source and notes tray row model into Swift; %ctor binds whichever
+// data source class exists.
+@interface SCIInboxListAdapterDataSource : NSObject
+@end
+
+static Class SCINotesTrayRowViewModelClass(void) {
+    static Class cls;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        cls = objc_getClass("IGDirectNotesTrayRowViewModel")
+            ?: objc_getClass("_TtC28IGDirectNotesViewModelsSwift29IGDirectNotesTrayRowViewModel");
+    });
+    return cls;
+}
+
+%group SCIInboxDataSource
+%hook SCIInboxListAdapterDataSource
 - (id)objectsForListAdapter:(id)arg1 {
     NSArray *originalObjs = %orig();
     NSMutableArray *filteredObjs = [NSMutableArray arrayWithCapacity:[originalObjs count]];
@@ -410,7 +427,7 @@ shouldPersistLastBugReportId:(id)arg6
         }
 
         // Hide notes tray
-        else if ([obj isKindOfClass:%c(IGDirectNotesTrayRowViewModel)]) {
+        else if ((SCINotesTrayRowViewModelClass() && [obj isKindOfClass:SCINotesTrayRowViewModelClass()])) {
             if ([SCIUtils getBoolPref:@"hide_notes_tray"]) {
                 NSLog(@"[SCInsta] Hiding notes tray");
 
@@ -427,6 +444,7 @@ shouldPersistLastBugReportId:(id)arg6
 
     return [filteredObjs copy];
 }
+%end
 %end
 
 // Explore page results
@@ -727,3 +745,13 @@ shouldPersistLastBugReportId:(id)arg6
     return %orig;
 }
 %end
+
+%ctor {
+    %init;
+
+    Class inboxDataSourceClass = objc_getClass("IGDirectInboxListAdapterDataSource")
+        ?: objc_getClass("_TtC34IGDirectInboxListAdapterDataSource34IGDirectInboxListAdapterDataSource");
+    if (inboxDataSourceClass) {
+        %init(SCIInboxDataSource, SCIInboxListAdapterDataSource = inboxDataSourceClass);
+    }
+}
