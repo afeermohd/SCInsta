@@ -48,18 +48,21 @@ static UIScrollView *SCIMainScrollViewInView(UIView *root) {
 }
 
 /// When posts are out of time, a post opened from DMs/profile is view-only: no scrolling to more posts.
-static void SCIApplyPostViewerScrollLock(UIViewController *viewController) {
+static void SCIApplyPostViewerScrollLock(id viewController) {
     if (![SCIFeatureSchedule isBlockedForKey:SCIScheduleFeedPostsKey]) return;
+    if (![viewController isKindOfClass:[UIViewController class]]) return;
 
-    UIScrollView *scrollView = SCIMainScrollViewInView(viewController.viewIfLoaded);
+    UIScrollView *scrollView = SCIMainScrollViewInView(((UIViewController *)viewController).viewIfLoaded);
     if (scrollView.scrollEnabled) {
         scrollView.scrollEnabled = NO;
     }
 }
 
-static void SCIApplyExploreGridVisibility(UIViewController *gridController) {
+static void SCIApplyExploreGridVisibility(id gridController) {
+    if (![gridController isKindOfClass:[UIViewController class]]) return;
+
     BOOL blocked = [SCIFeatureSchedule isBlockedForKey:SCIScheduleExploreKey];
-    UIView *view = gridController.viewIfLoaded;
+    UIView *view = ((UIViewController *)gridController).viewIfLoaded;
     if (view && view.hidden != blocked) {
         view.hidden = blocked;
     }
