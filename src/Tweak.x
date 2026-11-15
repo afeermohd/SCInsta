@@ -43,6 +43,7 @@ BOOL dmVisualMsgsViewedButtonEnabled = false;
         @"disable_auto_unmuting_reels": @(YES),
         @"doom_scrolling_reel_count": @(1),
         @"suppress_feature_intros": @(YES),
+        @"skip_call_update_prompt": @(YES),
         @"schedule_enabled": @(NO),
         @"schedule_start_hour": @(18),
         @"schedule_start_minute": @(0),
