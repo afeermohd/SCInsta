@@ -43,6 +43,9 @@
 @interface IGExploreGridViewController : IGViewController
 @end
 
+@interface IGExploreViewController : IGViewController
+@end
+
 @interface UIImage ()
 - (NSString *)ig_imageName;
 @end
@@ -351,9 +354,6 @@
 - (void)markNuxAsCompletedWithKey:(id)key;
 - (_Bool)nuxWithKeyIsCompleted:(id)key;
 - (_Bool)canShowNUXBasedOnLastTimestampForKey:(id)key;
-@end
-
-@interface IGExploreViewController : IGViewController
 @end
 
 @interface IGDirectMediaPickerConfig : NSObject
