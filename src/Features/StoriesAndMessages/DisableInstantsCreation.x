@@ -120,7 +120,9 @@ static BOOL SCIInstantsClassHasMethod(Class cls, SEL selector, const char *types
         %init(SCIInstantsTryPrompt, SCIInstantsDelegateImpl = delegateClass);
     }
 
-    Class inboxClass = objc_getClass("_TtC27IGDirectInboxViewController27IGDirectInboxViewController");
+    // Instagram 455 moved the inbox into Swift; 447 still has the ObjC class.
+    Class inboxClass = objc_getClass("_TtC27IGDirectInboxViewController27IGDirectInboxViewController")
+        ?: objc_getClass("IGDirectInboxViewController");
     if (SCIInstantsClassHasMethod(inboxClass, @selector(tryShowQuickSnapPeek), "v16@0:8")) {
         %init(SCIInstantsInboxPeek, SCIDirectInboxViewController = inboxClass);
     }
